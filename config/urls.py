@@ -10,6 +10,7 @@ urlpatterns = [
 
     # API v1
     path("api/auth/", include("accounts.urls")),
+    path("api/n8n/", include("n8n_integration.urls")),
     path("api/trends/", include("trends.urls")),
     path("api/scripts/", include("ai_scripts.urls")),
     path("api/analytics/", include("analytics.urls")),
