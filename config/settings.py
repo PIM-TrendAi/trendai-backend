@@ -33,6 +33,8 @@ INSTALLED_APPS = [
     "ai_scripts",
     "analytics",
     "platforms",
+    # WebSocket support
+    "channels",
 ]
 
 MIDDLEWARE = [
@@ -65,6 +67,7 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = "config.wsgi.application"
+ASGI_APPLICATION = "config.routing.application"
 
 # --- Database (PostgreSQL) ---
 DATABASES = {
@@ -130,6 +133,16 @@ CORS_ALLOWED_ORIGINS = os.getenv(
     "CORS_ALLOWED_ORIGINS",
     "http://localhost:3000,http://10.0.2.2:8000",
 ).split(",")
+
+# --- Django Channels ---
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels.layers.InMemoryChannelLayer",
+    }
+}
+
+# --- Internal API secret (used by N8n to post TikTok tokens) ---
+INTERNAL_API_SECRET = os.getenv("INTERNAL_API_SECRET", "change-me-in-production")
 
 # --- drf-spectacular (Swagger) ---
 SPECTACULAR_SETTINGS = {

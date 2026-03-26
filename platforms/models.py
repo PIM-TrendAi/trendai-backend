@@ -20,6 +20,8 @@ class UserPlatform(models.Model):
     platform_name = models.CharField(max_length=20, choices=PLATFORM_CHOICES)
     connected = models.BooleanField(default=False)
     connected_at = models.DateTimeField(null=True, blank=True)
+    access_token = models.TextField(null=True, blank=True)
+    token_expires_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         db_table = "user_platforms"

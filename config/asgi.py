@@ -1,16 +1,11 @@
 """
-ASGI config for config project.
-
-It exposes the ASGI callable as a module-level variable named ``application``.
-
-For more information on this file, see
-https://docs.djangoproject.com/en/4.2/howto/deployment/asgi/
+ASGI config for TrendAI project.
+Uses Django Channels for WebSocket support alongside standard HTTP.
 """
 
 import os
 
-from django.core.asgi import get_asgi_application
-
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
 
-application = get_asgi_application()
+# Import routing AFTER setting the env var so Django initialises correctly.
+from config.routing import application  # noqa: E402, F401

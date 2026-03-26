@@ -2,10 +2,17 @@
 Root URL Configuration for TrendAI API.
 """
 from django.contrib import admin
+from django.http import JsonResponse
 from django.urls import path, include
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 
+
+def health(request):
+    return JsonResponse({"status": "ok", "service": "trendai"})
+
+
 urlpatterns = [
+    path("api/health/", health),
     path("admin/", admin.site.urls),
 
     # API v1
