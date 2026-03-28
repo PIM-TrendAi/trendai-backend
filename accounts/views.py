@@ -28,7 +28,8 @@ class RegisterView(APIView):
     @extend_schema(request=RegisterSerializer, responses={201: UserProfileSerializer})
     def post(self, request):
         serializer = RegisterSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+        if not serializer.is_valid():
+            return Response({"errors": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
         user = serializer.save()
         tokens = get_tokens_for_user(user)
         return Response(
@@ -44,7 +45,8 @@ class LoginView(APIView):
     @extend_schema(request=LoginSerializer)
     def post(self, request):
         serializer = LoginSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+        if not serializer.is_valid():
+            return Response({"errors": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
         user = serializer.validated_data["user"]
         tokens = get_tokens_for_user(user)
         return Response(
