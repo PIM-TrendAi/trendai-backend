@@ -24,12 +24,16 @@ class TrendListView(generics.ListAPIView):
         if platform:
             qs = qs.filter(platform=platform)
 
-        if sort == "growth":
+        if sort == "views":
+            qs = qs.order_by("-total_views")
+        elif sort == "likes":
+            qs = qs.order_by("-total_likes")
+        elif sort == "recent":
+            qs = qs.order_by("-created_at")
+        elif sort == "growth":
             qs = qs.order_by("-growth")
         elif sort == "score":
             qs = qs.order_by("-score")
-        elif sort == "recent":
-            qs = qs.order_by("-created_at")
 
         return qs
 

@@ -46,38 +46,68 @@ def _fetch_user_info(token):
     return None
 
 
+def _fetch_all_videos_debug(token):
+    """Returns raw step-by-step responses for debugging."""
+    out = {}
+    try:
+        r1 = httpx.post(TIKTOK_VIDEO_LIST_URL, headers=_tiktok_headers(token),
+                        params={"fields": "id,title,create_time,cover_image_url,share_url"},
+                        json={"max_count": 5}, timeout=10)
+        out["list_status"] = r1.status_code
+        out["list_body"] = r1.json()
+        ids = [v["id"] for v in r1.json().get("data", {}).get("videos", [])]
+        if ids:
+            r2 = httpx.post(TIKTOK_VIDEO_QUERY_URL, headers=_tiktok_headers(token),
+                            params={"fields": "id,title,view_count,like_count,comment_count,share_count"},
+                            json={"filters": {"video_ids": ids}}, timeout=10)
+            out["query_status"] = r2.status_code
+            out["query_body"] = r2.json()
+    except Exception as e:
+        out["exception"] = str(e)
+    return out
+
+
 def _fetch_all_videos(token, max_count=20):
+    max_count = min(max_count, 20)  # TikTok API hard limit
     """Returns list of video stat dicts from TikTok, or []."""
     try:
-        # Step 1: list video IDs
+        # Step 1: list video IDs + create_time (only available from video/list)
         resp = httpx.post(
             TIKTOK_VIDEO_LIST_URL,
             headers=_tiktok_headers(token),
-            json={"max_count": max_count, "fields": ["id", "title", "create_time"]},
+            params={"fields": "id,title,create_time,cover_image_url,share_url"},
+            json={"max_count": max_count},
             timeout=10,
         )
         if resp.status_code != 200:
             return []
-        video_ids = [v["id"] for v in resp.json().get("data", {}).get("videos", [])]
-        if not video_ids:
+        list_videos = resp.json().get("data", {}).get("videos", [])
+        if not list_videos:
             return []
 
-        # Step 2: query stats
+        # Build lookup for create_time by video ID
+        meta = {v["id"]: v for v in list_videos}
+        video_ids = list(meta.keys())
+
+        # Step 2: query stats (create_time is NOT a valid field here)
         resp2 = httpx.post(
             TIKTOK_VIDEO_QUERY_URL,
             headers=_tiktok_headers(token),
-            json={
-                "filters": {"video_ids": video_ids},
-                "fields": [
-                    "id", "title", "create_time",
-                    "view_count", "like_count", "comment_count",
-                    "share_count", "average_time_watched",
-                ],
-            },
+            params={"fields": "id,title,view_count,like_count,comment_count,share_count"},
+            json={"filters": {"video_ids": video_ids}},
             timeout=10,
         )
-        if resp2.status_code == 200:
-            return resp2.json().get("data", {}).get("videos", [])
+        if resp2.status_code != 200:
+            return []
+
+        # Merge stats with create_time from step 1
+        stats = resp2.json().get("data", {}).get("videos", [])
+        for v in stats:
+            m = meta.get(v["id"], {})
+            v["create_time"] = m.get("create_time")
+            v.setdefault("cover_image_url", m.get("cover_image_url", ""))
+            v["share_url"] = m.get("share_url", "")
+        return stats
     except httpx.HTTPError:
         pass
     return []
@@ -122,7 +152,7 @@ class EngagementView(APIView):
         if not token:
             return Response({"data": _empty_week()})
 
-        videos = _fetch_all_videos(token, max_count=50)
+        videos = _fetch_all_videos(token, max_count=20)
         day_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
         today = datetime.now(tz=timezone.utc)
         buckets = {i: {"views": 0, "engagement": 0} for i in range(7)}
@@ -176,19 +206,58 @@ class PlatformPerformanceView(APIView):
 
 
 class HeatmapView(APIView):
-    """GET /api/analytics/heatmap/ — Best posting-time heatmap."""
+    """GET /api/analytics/heatmap/ — Best posting-time heatmap derived from real video engagement."""
     permission_classes = [IsAuthenticated]
 
+    _HOUR_SLOTS = [
+        ("12AM", range(0, 6)),
+        ("6AM",  range(6, 12)),
+        ("12PM", range(12, 18)),
+        ("6PM",  range(18, 24)),
+    ]
+    _DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
     def get(self, request):
-        # Static engagement heatmap — real data requires TikTok Research API (enterprise)
-        return Response({
-            "data": [
-                {"hour": "6AM",  "Mon": 2, "Tue": 3, "Wed": 4, "Thu": 5, "Fri": 8, "Sat": 9, "Sun": 7},
-                {"hour": "12PM", "Mon": 5, "Tue": 6, "Wed": 7, "Thu": 8, "Fri": 9, "Sat": 8, "Sun": 6},
-                {"hour": "6PM",  "Mon": 8, "Tue": 9, "Wed": 9, "Thu": 9, "Fri": 10, "Sat": 9, "Sun": 8},
-                {"hour": "12AM", "Mon": 3, "Tue": 4, "Wed": 5, "Thu": 6, "Fri": 7, "Sat": 8, "Sun": 7},
-            ]
-        })
+        token = _get_tiktok_token(request.user)
+        if not token:
+            return Response({"data": self._empty_heatmap(), "_debug": "no_token"})
+
+        videos = _fetch_all_videos(token, max_count=20)
+        if not videos:
+            return Response({"data": self._empty_heatmap(), "_debug": "no_videos", "_debug_raw": _fetch_all_videos_debug(token)})
+
+        # Accumulate engagement score per (hour_slot, day_of_week)
+        scores = {slot: [0] * 7 for slot, _ in self._HOUR_SLOTS}
+        for v in videos:
+            ts = v.get("create_time")
+            if not ts:
+                continue
+            dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+            day_idx = dt.weekday()  # 0=Mon, 6=Sun
+            hour = dt.hour
+            engagement = v.get("like_count", 0) + v.get("comment_count", 0) + v.get("share_count", 0)
+            views = v.get("view_count", 1) or 1
+            score = round(engagement / views * 100, 2)
+            for slot, hours in self._HOUR_SLOTS:
+                if hour in hours:
+                    scores[slot][day_idx] += score
+                    break
+
+        # Normalize to 0–10 scale
+        all_vals = [s for row in scores.values() for s in row]
+        max_val = max(all_vals) if max(all_vals) > 0 else 1
+
+        data = []
+        for slot, _ in self._HOUR_SLOTS:
+            row = {"hour": slot}
+            for i, day in enumerate(self._DAYS):
+                row[day] = round(scores[slot][i] / max_val * 10, 1)
+            data.append(row)
+
+        return Response({"data": data, "videos_analyzed": len(videos)})
+
+    def _empty_heatmap(self):
+        return [{"hour": slot, **{d: 0 for d in self._DAYS}} for slot, _ in self._HOUR_SLOTS]
 
 
 class SavedTrendAnalyticsView(APIView):

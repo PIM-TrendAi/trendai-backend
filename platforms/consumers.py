@@ -11,6 +11,7 @@ Flow:
 import asyncio
 import json
 from datetime import datetime, timezone
+from typing import Optional
 from urllib.parse import parse_qs
 
 import httpx
@@ -112,7 +113,7 @@ class TikTokStatsConsumer(AsyncWebsocketConsumer):
     # TikTok API calls                                                     #
     # ------------------------------------------------------------------ #
 
-    async def _fetch_tiktok_stats(self) -> dict | None:
+    async def _fetch_tiktok_stats(self) -> Optional[dict]:
         """
         Returns the payload dict, or None if a fatal error occurred
         (error frame already sent to client).
@@ -132,7 +133,7 @@ class TikTokStatsConsumer(AsyncWebsocketConsumer):
 
         # Step 1: Get list of video IDs
         # NOTE: TikTok v2 API requires `fields` as a URL query param, not in the body.
-        list_fields = "id,title,cover_image_url"
+        list_fields = "id,title,cover_image_url,share_url"
         try:
             resp = await self._http_client.post(
                 TIKTOK_VIDEO_LIST_URL,
@@ -167,7 +168,7 @@ class TikTokStatsConsumer(AsyncWebsocketConsumer):
 
         # Step 2: Query stats for those videos
         # Fields must also be a URL query param for video/query/
-        query_fields = "id,title,cover_image_url,view_count,like_count,comment_count,share_count,average_time_watched"
+        query_fields = "id,title,cover_image_url,view_count,like_count,comment_count,share_count"
         try:
             resp = await self._http_client.post(
                 TIKTOK_VIDEO_QUERY_URL,
@@ -201,16 +202,16 @@ class TikTokStatsConsumer(AsyncWebsocketConsumer):
     def _build_payload(self, items: list) -> dict:
         videos = []
         for item in items:
-            avg_ms = item.get("average_time_watched", 0) or 0
             videos.append({
                 "video_id": item.get("id", ""),
                 "title": item.get("title", ""),
                 "thumbnail_url": item.get("cover_image_url", ""),
+                "share_url": item.get("share_url", ""),
                 "views": item.get("view_count", 0),
                 "likes": item.get("like_count", 0),
                 "comments": item.get("comment_count", 0),
                 "shares": item.get("share_count", 0),
-                "avg_watch_time_seconds": round(avg_ms / 1000, 1),
+                "avg_watch_time_seconds": 0,
             })
         return {"videos": videos, "last_updated": self._now_iso()}
 

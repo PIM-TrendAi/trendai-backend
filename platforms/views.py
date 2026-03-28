@@ -3,6 +3,7 @@ Platforms views — connect/disconnect social media platforms.
 """
 from datetime import timedelta
 
+import httpx
 from rest_framework import generics, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -72,6 +73,11 @@ class TikTokInternalTokenView(APIView):
         if not creator_id or not access_token:
             return Response({"error": "creator_id and access_token are required"}, status=status.HTTP_400_BAD_REQUEST)
 
+        try:
+            creator_id = int(creator_id)
+        except (TypeError, ValueError):
+            return Response({"error": "creator_id must be a numeric user ID"}, status=status.HTTP_400_BAD_REQUEST)
+
         User = get_user_model()
         try:
             user = User.objects.get(pk=creator_id)
@@ -86,6 +92,71 @@ class TikTokInternalTokenView(APIView):
         platform.save()
 
         return Response({"status": "ok"})
+
+
+class TikTokDebugView(APIView):
+    """GET /api/platforms/tiktok/debug/ — Raw TikTok API responses for debugging."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        try:
+            platform = UserPlatform.objects.get(user=request.user, platform_name="TikTok")
+        except UserPlatform.DoesNotExist:
+            return Response({"error": "TikTok not connected"}, status=404)
+
+        token = platform.access_token
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+        results = {}
+
+        # Test user info
+        try:
+            r = httpx.get(
+                "https://open.tiktokapis.com/v2/user/info/",
+                headers=headers,
+                params={"fields": "follower_count,video_count,likes_count"},
+                timeout=10,
+            )
+            results["user_info"] = {"status": r.status_code, "body": r.json()}
+        except Exception as e:
+            results["user_info"] = {"error": str(e)}
+
+        # Test video list + extract IDs
+        video_ids = []
+        try:
+            r = httpx.post(
+                "https://open.tiktokapis.com/v2/video/list/",
+                headers=headers,
+                params={"fields": "id,title,cover_image_url"},
+                json={"max_count": 5},
+                timeout=10,
+            )
+            list_body = r.json()
+            results["video_list"] = {"status": r.status_code, "body": list_body}
+            video_ids = [v["id"] for v in list_body.get("data", {}).get("videos", [])]
+        except Exception as e:
+            results["video_list"] = {"error": str(e)}
+
+        # Test video query (stats)
+        if video_ids:
+            try:
+                r2 = httpx.post(
+                    "https://open.tiktokapis.com/v2/video/query/",
+                    headers=headers,
+                    params={"fields": "id,title,view_count,like_count,comment_count,share_count"},
+                    json={"filters": {"video_ids": video_ids}},
+                    timeout=10,
+                )
+                results["video_query"] = {"status": r2.status_code, "body": r2.json()}
+            except Exception as e:
+                results["video_query"] = {"error": str(e)}
+        else:
+            results["video_query"] = "skipped — no video IDs from list"
+
+        results["token_preview"] = token[:20] + "..." if token else None
+        results["connected"] = platform.connected
+        results["token_expires_at"] = str(platform.token_expires_at)
+        return Response(results)
 
 
 class TikTokDisconnectView(APIView):
