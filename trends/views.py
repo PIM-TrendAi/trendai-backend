@@ -9,6 +9,7 @@ from rest_framework.permissions import IsAuthenticated
 
 from .models import Trend, SavedTrend
 from .serializers import TrendSerializer, SavedTrendSerializer
+from .services import sync_scraped_youtube_to_trends
 
 
 class TrendListView(generics.ListAPIView):
@@ -17,6 +18,8 @@ class TrendListView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
+        sync_scraped_youtube_to_trends(limit=120)
+
         qs = Trend.objects.all()
         platform = self.request.query_params.get("platform")
         sort = self.request.query_params.get("sort", "growth")

@@ -36,6 +36,10 @@ class User(AbstractBaseUser, PermissionsMixin):
     notification_enabled = models.BooleanField(default=True)
     # Data refresh interval in minutes
     data_refresh_interval = models.IntegerField(default=15)
+    # YouTube OAuth credentials
+    youtube_access_token = models.TextField(blank=True, default="")
+    youtube_refresh_token = models.TextField(blank=True, default="")
+    youtube_channel_id = models.CharField(max_length=100, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

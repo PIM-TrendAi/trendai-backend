@@ -81,3 +81,86 @@ class SavedScriptListView(generics.ListAPIView):
 
     def get_queryset(self):
         return AIScript.objects.filter(user=self.request.user)
+
+
+# --- YouTube AI Integration (n8n Webhooks & DB) ---
+
+from .models import YouTubeVideo, YouTubeGenerated
+import requests
+import json
+from django.conf import settings
+
+class YouTubeVideoSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = YouTubeVideo
+        fields = '__all__'
+
+
+class YouTubeGeneratedSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = YouTubeGenerated
+        fields = '__all__'
+
+
+class YouTubeVideoListView(generics.ListAPIView):
+    """GET /api/scripts/youtube/trends/ — List scraped trending YouTube videos."""
+    serializer_class = YouTubeVideoSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        niche = self.request.query_params.get("niche")
+        qs = YouTubeVideo.objects.all()
+        if niche:
+            qs = qs.filter(niche__icontains=niche)
+        return qs[:20]
+
+
+class YouTubeGeneratedListView(generics.ListAPIView):
+    """GET /api/scripts/youtube/history/ — List user's generated YouTube AI videos."""
+    serializer_class = YouTubeGeneratedSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return YouTubeGenerated.objects.filter(user_id=self.request.user.id)
+
+
+class ProxyGenerateVideoView(APIView):
+    """POST /api/scripts/youtube/generate/ — Trigger n8n video generation."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        niche = request.data.get("niche", "tech")
+        prompt = request.data.get("prompt", "")
+        
+        # Trigger n8n webhook
+        webhook_url = "http://localhost:5678/webhook/generate-video-v2"
+        payload = {
+            "user_id": request.user.id,
+            "email": request.user.email,
+            "niche": niche,
+            "prompt": prompt
+        }
+        
+        try:
+            resp = requests.post(webhook_url, json=payload, timeout=5)
+            return Response({"status": "Webhook triggered successfully", "n8n_response": resp.text}, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({"error": f"Failed to reach n8n: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class ProxyScrapeTrendsView(APIView):
+    """POST /api/scripts/youtube/scrape/ — Trigger n8n YouTube Scraping."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        niche = request.data.get("niche", "tech")
+        
+        webhook_url = "http://localhost:5678/webhook/scrape-trends"
+        payload = {"niche": niche}
+        
+        try:
+            resp = requests.post(webhook_url, json=payload, timeout=15)
+            # n8n might return 200 immediately if we set responseMode "onReceived"
+            return Response({"status": f"Scraping started for {niche}", "n8n_response": resp.text}, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({"error": f"Failed to reach n8n: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
