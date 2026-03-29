@@ -8,3 +8,4 @@ python-dotenv==1.0.0
 Pillow==10.4.0
 channels==4.1.0
 httpx
+requests==2.32.5
