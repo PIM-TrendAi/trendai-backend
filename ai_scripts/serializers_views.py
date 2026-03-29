@@ -81,3 +81,168 @@ class SavedScriptListView(generics.ListAPIView):
 
     def get_queryset(self):
         return AIScript.objects.filter(user=self.request.user)
+
+
+from .models import GeneratedVideo
+from django.shortcuts import get_object_or_404
+import requests
+
+class GeneratedVideoSerializer(serializers.ModelSerializer):
+    """Serializer for the unmanaged GeneratedVideo model from n8n."""
+    thumbnail_url = serializers.CharField(source='reel.thumbnail_url', read_only=True)
+
+    class Meta:
+        model = GeneratedVideo
+        fields = ["id", "reel_id", "user_id_str", "niche", "user_prompt", "script", "script_text", "fal_request_id", "video_url", "status", "created_at", "updated_at", "thumbnail_url"]
+
+class GeneratedVideoListView(generics.ListAPIView):
+    """GET /api/videos/ — List all of the user's generated AI videos from n8n."""
+    serializer_class = GeneratedVideoSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        # Show all generated videos (sorted by most recent)
+        # In a multi-user production setup, filter by user_id_str=str(self.request.user.id)
+        return GeneratedVideo.objects.all().order_by("-created_at")
+
+class VideoGenerateTriggerView(APIView):
+    """POST /api/videos/generate/ — Trigger the n8n AI video generation webhook."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        reel_id = request.data.get("reel_id")
+        niche = request.data.get("niche")
+        prompt = request.data.get("prompt", "Create a viral video")
+        
+        if not reel_id:
+            return Response({"error": "reel_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        webhook_url = "http://localhost:5678/webhook/generate"
+        payload = {
+            "reel_id": reel_id,
+            "niche": niche or (request.user.categories[0] if request.user.categories else "general"),
+            "user_id": str(request.user.id),
+            "user_email": request.user.email,
+            "prompt": prompt
+        }
+        
+        try:
+            errors = []
+            # Try production webhook first, fallback to webhook-test
+            for webhook_url in ["http://localhost:5678/webhook/generate", "http://localhost:5678/webhook-test/generate"]:
+                try:
+                    resp = requests.post(webhook_url, json=payload, timeout=15)
+                    if resp.status_code in (200, 201):
+                        return Response({
+                            "message": "Video generation job triggered successfully.",
+                            "reel_id": reel_id
+                        }, status=status.HTTP_200_OK)
+                    else:
+                        errors.append(f"{webhook_url} returned {resp.status_code}: {resp.text}")
+                except requests.ConnectionError:
+                    errors.append(f"{webhook_url} is unreachable.")
+                    continue
+            
+            # If we get here, both URLs failed. Print and return the errors.
+            error_message = " | ".join(errors)
+            print("n8n Webhook Trigger Failed:", error_message)
+            return Response({
+                "error": "Failed to trigger n8n workflow.",
+                "details": error_message
+            }, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        except requests.RequestException as e:
+            return Response({"error": f"Failed to reach n8n video workflow: {str(e)}"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+
+class VideoApproveView(APIView):
+    """POST /api/scripts/videos/<id>/approve/ — Mark a generated video as approved and trigger Facebook post via n8n."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        video = get_object_or_404(GeneratedVideo, pk=pk)
+        video.status = 'approved'
+        video.save(update_fields=['status'])
+
+        # Optionally notify n8n that approval happened so it can post to Facebook.
+        # The n8n workflow handles the actual FB posting via its email‑approval node,
+        # but we expose this endpoint so the app can also directly signal approval.
+        try:
+            requests.post(
+                'http://localhost:5678/webhook/approve',
+                json={'video_id': video.id, 'action': 'approve', 'video_url': video.video_url or ''},
+                timeout=5,
+            )
+        except Exception:
+            pass  # n8n notification is best‑effort; DB is already updated.
+
+        return Response({'status': 'approved', 'id': video.id}, status=status.HTTP_200_OK)
+
+
+class VideoRejectView(APIView):
+    """POST /api/scripts/videos/<id>/reject/ — Mark a generated video as rejected."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        video = get_object_or_404(GeneratedVideo, pk=pk)
+        video.status = 'rejected'
+        video.save(update_fields=['status'])
+        return Response({'status': 'rejected', 'id': video.id}, status=status.HTTP_200_OK)
+
+
+class VideoPublishView(APIView):
+    """POST /api/scripts/videos/<id>/publish/ — Post video to Facebook page and mark as published."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        import os
+        video = get_object_or_404(GeneratedVideo, pk=pk)
+        fb_token = os.environ.get('FB_ACCESS_TOKEN', '').strip()
+        fb_page_id = os.environ.get('FB_PAGE_ID', '979625138576176').strip()
+
+        if not video.video_url:
+            return Response({'error': 'No video URL to publish.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not fb_token:
+            return Response({'error': 'FB_ACCESS_TOKEN not configured in .env'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        description = (video.script_text or video.user_prompt or 'AI Generated Video') + ' #TrendAI'
+
+        try:
+            fb_resp = requests.post(
+                f'https://graph.facebook.com/v24.0/{fb_page_id}/videos',
+                data={
+                    'file_url': video.video_url,
+                    'access_token': fb_token,
+                    'description': description,
+                    'published': 'true',
+                },
+                timeout=60,
+            )
+            fb_data = {}
+            try:
+                fb_data = fb_resp.json()
+            except Exception:
+                pass
+
+            if fb_resp.status_code in (200, 201) and 'id' in fb_data:
+                video.status = 'published'
+                video.save(update_fields=['status'])
+                return Response({
+                    'status': 'published',
+                    'id': video.id,
+                    'fb_video_id': fb_data.get('id', ''),
+                }, status=status.HTTP_200_OK)
+            else:
+                # Facebook rejected the request — return the error details
+                error_msg = fb_data.get('error', {}).get('message', fb_resp.text[:300])
+                return Response({
+                    'error': f'Facebook API error: {error_msg}',
+                    'fb_status': fb_resp.status_code,
+                    'fb_response': fb_data,
+                }, status=status.HTTP_502_BAD_GATEWAY)
+
+        except requests.Timeout:
+            return Response({'error': 'Facebook API timeout (>60s).'}, status=status.HTTP_504_GATEWAY_TIMEOUT)
+        except requests.RequestException as e:
+            return Response({'error': f'Network error reaching Facebook: {str(e)}'}, status=status.HTTP_502_BAD_GATEWAY)

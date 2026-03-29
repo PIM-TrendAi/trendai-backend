@@ -7,7 +7,9 @@ from pathlib import Path
 from datetime import timedelta
 from dotenv import load_dotenv
 
-load_dotenv()
+# Load .env using an absolute path so it works regardless of CWD
+_ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
+load_dotenv(_ENV_FILE)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 

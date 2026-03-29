@@ -74,3 +74,29 @@ class SavedTrend(models.Model):
 
     def __str__(self):
         return f"{self.user.email} → {self.trend.hashtag}"
+
+
+class FacebookReel(models.Model):
+    """
+    Mapped to the facebook_reels table populated by the n8n scraping workflow.
+    Managed=False prevents Django from altering the schema, as the SQL migration script handles it.
+    """
+    reel_id = models.TextField(unique=True)
+    reel_url = models.TextField(null=True, blank=True)
+    page_url = models.TextField(null=True, blank=True)
+    text = models.TextField(null=True, blank=True)
+    created_at = models.DateTimeField(null=True, blank=True)
+    play_count = models.IntegerField(default=0)
+    duration_ms = models.IntegerField(default=0)
+    niche = models.TextField(null=True, blank=True)
+    status = models.TextField(default='scraped')
+    thumbnail_url = models.TextField(null=True, blank=True)
+    created_db = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        managed = False
+        db_table = "facebook_reels"
+        ordering = ["-created_db"]
+
+    def __str__(self):
+        return f"{self.niche} - {self.reel_id}"

@@ -5,10 +5,11 @@ Supports filtering by platform (?platform=TikTok) and sorting (?sort=growth|scor
 from rest_framework import generics, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
+from django.core.management import call_command
 
-from .models import Trend, SavedTrend
-from .serializers import TrendSerializer, SavedTrendSerializer
+from .models import Trend, SavedTrend, FacebookReel
+from .serializers import TrendSerializer, SavedTrendSerializer, FacebookReelSerializer
 
 
 class TrendListView(generics.ListAPIView):
@@ -67,3 +68,69 @@ class SavedTrendListView(generics.ListAPIView):
 
     def get_queryset(self):
         return SavedTrend.objects.filter(user=self.request.user).select_related("trend")
+
+
+class FacebookReelListView(generics.ListAPIView):
+    """GET /api/trends/reels/ — List scraped Facebook Reels (filtering by user's categories if provided)."""
+    serializer_class = FacebookReelSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        qs = FacebookReel.objects.all()
+        # Optional ?niche= query param to filter by niche
+        niche = self.request.query_params.get("niche")
+        if niche:
+            qs = qs.filter(niche__icontains=niche)
+        return qs.order_by("-play_count")
+
+
+import requests
+
+class ScrapeTriggerView(APIView):
+    """POST /api/trends/scrape/ — Triggers the n8n Apify Scraping webhook."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        niche = request.data.get("niche")
+        if not niche and user.categories:
+            niche = user.categories[0]
+        if not niche:
+            niche = "tech" # fallback default
+            
+        webhook_url = "http://localhost:5678/webhook/scrape"
+        payload = {
+            "niche": niche,
+            "pages": request.data.get("pages", [{"url": "https://www.facebook.com/TunisieNumerique"}])
+        }
+        
+        try:
+            resp = requests.post(webhook_url, json=payload, timeout=10)
+            if resp.status_code == 200:
+                return Response({"message": "Scraping job triggered successfully.", "niche": niche}, status=status.HTTP_200_OK)
+            elif resp.status_code == 404:
+                return Response({"error": "n8n workflow is INACTIVE. Please toggle it to 'Active' in the top-right corner of the n8n editor."}, status=status.HTTP_400_BAD_REQUEST)
+            
+            try:
+                error_hint = resp.json().get("hint", "")
+            except:
+                error_hint = resp.text
+            return Response({"error": f"n8n logic failed ({resp.status_code}): {error_hint}"}, status=status.HTTP_400_BAD_REQUEST)
+        except requests.RequestException as e:
+            return Response({"error": f"Failed to reach n8n workflow: {str(e)}"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+
+class SyncReelsToTrendsView(APIView):
+    """POST /api/trends/sync/ — Syncs scraped Facebook reels into the Trends table."""
+    permission_classes = [AllowAny]  # Allow internal services (n8n) to trigger this without auth
+
+    def post(self, request):
+        niche = request.data.get('niche')
+        try:
+            if niche:
+                call_command('sync_reels_to_trends', niche=niche)
+            else:
+                call_command('sync_reels_to_trends')
+            return Response({"message": "Successfully synced Facebook reels to Trends table."}, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({"error": f"Failed to sync reels to trends: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

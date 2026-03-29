@@ -46,3 +46,44 @@ class AIScript(models.Model):
 
     def __str__(self):
         return f"{self.user.email} — {self.prompt[:60]}"
+
+
+class GeneratedVideo(models.Model):
+    """
+    Mapped to the generated_videos table populated by the n8n video generation workflow.
+    Managed=False prevents Django from altering the schema, as it's owned by the SQL migration.
+    """
+    reel = models.ForeignKey(
+        'trends.FacebookReel', 
+        on_delete=models.SET_NULL, 
+        null=True, 
+        blank=True, 
+        db_column='reel_id', 
+        to_field='reel_id'
+    )
+    user_id_str = models.CharField(max_length=50, db_column='user_id', null=True, blank=True)
+    niche = models.TextField(null=True, blank=True)
+    user_prompt = models.TextField(null=True, blank=True)
+    script = models.TextField(null=True, blank=True)
+    script_text = models.TextField(null=True, blank=True)
+    fal_request_id = models.TextField(null=True, blank=True)
+    video_url = models.TextField(null=True, blank=True)
+    status = models.TextField(default='pending')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        managed = False
+        db_table = "generated_videos"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Video {self.id} - Status: {self.status}"
+    
+    @property
+    def user(self):
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        if self.user_id_str and self.user_id_str.isdigit():
+            return User.objects.filter(id=int(self.user_id_str)).first()
+        return None
