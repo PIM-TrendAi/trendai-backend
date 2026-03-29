@@ -140,20 +140,27 @@ class StartWorkflowView(APIView):
         return Response({"success": True, "message": "Workflow started. Session is initializing in n8n."})
 
 class TriggerScrapingView(APIView):
-    """POST /api/n8n/trigger-scrape/ - Manually run the daily TikTok scraper workflow via webhook"""
+    """POST /api/n8n/trigger-scrape/ - Trigger the scraper workflow (TikTok or Instagram)"""
     permission_classes = [IsAuthenticated]
 
-    def post(self, request):
-        # Optional niche keyword like "tech", "comedy", etc.
-        niche = request.data.get("niche", "")
-        payload = {"niche": niche} if niche else {}
+    # Webhook IDs by platform
+    SCRAPE_WEBHOOK_IDS = {
+        "tiktok": "8a4b64f3-ac29-4591-a1b7-4c2089f92bb4",
+        "instagram": "f1e2d3c4-b5a6-7890-1234-567890abcdef",  # Instagram scrape webhook
+    }
 
-        success = trigger_n8n_webhook("8a4b64f3-ac29-4591-a1b7-4c2089f92bb4", payload)
-        
+    def post(self, request):
+        niche = request.data.get("niche", "")
+        platform = request.data.get("platform", "tiktok").lower()
+        payload = {"niche": niche, "platform": platform} if niche else {"platform": platform}
+
+        webhook_id = self.SCRAPE_WEBHOOK_IDS.get(platform, self.SCRAPE_WEBHOOK_IDS["tiktok"])
+        success = trigger_n8n_webhook(webhook_id, payload)
+
         if not success:
             return Response({"error": "Failed to trigger n8n scraping workflow"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        return Response({"success": True, "message": "Scraping workflow triggered successfully."})
+        return Response({"success": True, "message": f"{platform.title()} scraping workflow triggered successfully."})
 
 class GetLatestSessionView(APIView):
     """GET /api/n8n/sessions/latest/ - Get the user's latest session"""
