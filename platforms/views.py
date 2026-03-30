@@ -174,3 +174,154 @@ class TikTokDisconnectView(APIView):
         except UserPlatform.DoesNotExist:
             pass
         return Response({"status": "disconnected"})
+
+
+# ── Instagram Connect/Disconnect/Status ──────────────────────────────
+# Since it's a single hardcoded IG Business account, we store the token
+# in UserPlatform so the analytics can query the Instagram Graph API.
+
+import os
+
+IG_ACCESS_TOKEN = os.getenv(
+    "INSTAGRAM_ACCESS_TOKEN",
+    "EAAbwZCOua5JwBRF510VdWqMyHKgArwZAco5maDRa7ZATLccZCcRMlehrtkJrjXQpAc48fDlyh82Yr2aZCW88mcyckRliDKU8Dn1b9u0G26AmPYaiDbFfe2pXdsUOuYo39zDLAJrzdMQ92a5kYFtOsDoY2AquiLTXamy5cCYpRXDXTdqTUMTt1xqw7zb1I9XtYZCKOLc1dAIKyJXg5MutZBT37CoUKrsKliD0svqyyXCvR6Vsc9863bjBxeqkRyNEPUHUcmJalzdEIZA4ZApZAfnJBA0i9Q",
+)
+IG_BUSINESS_ACCOUNT_ID = os.getenv("IG_BUSINESS_ACCOUNT_ID", "17841480637267691")
+
+
+class InstagramConnectView(APIView):
+    """POST /api/platforms/instagram/connect/ — Store the IG token and mark connected."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        platform, _ = UserPlatform.objects.get_or_create(
+            user=request.user, platform_name="Instagram"
+        )
+        platform.access_token = IG_ACCESS_TOKEN
+        platform.connected = True
+        platform.connected_at = timezone.now()
+        platform.save()
+        return Response({"status": "connected"})
+
+
+class InstagramDisconnectView(APIView):
+    """POST /api/platforms/instagram/disconnect/ — Clear token and mark disconnected."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        try:
+            platform = UserPlatform.objects.get(user=request.user, platform_name="Instagram")
+            platform.access_token = None
+            platform.connected = False
+            platform.connected_at = None
+            platform.save()
+        except UserPlatform.DoesNotExist:
+            pass
+        return Response({"status": "disconnected"})
+
+
+class InstagramStatusView(APIView):
+    """GET /api/platforms/instagram/status/ — Check if Instagram is connected."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        try:
+            platform = UserPlatform.objects.get(user=request.user, platform_name="Instagram")
+            return Response({"connected": platform.connected})
+        except UserPlatform.DoesNotExist:
+            return Response({"connected": False})
+
+
+# ── Facebook Connect/Disconnect/Status ────────────────────────────────
+
+FB_ACCESS_TOKEN = os.getenv("FACEBOOK_ACCESS_TOKEN", "")
+FB_PAGE_ID = os.getenv("FACEBOOK_PAGE_ID", "")
+
+
+class FacebookConnectView(APIView):
+    """POST /api/platforms/facebook/connect/ — Store the FB token and mark connected."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        platform, _ = UserPlatform.objects.get_or_create(
+            user=request.user, platform_name="Facebook"
+        )
+        platform.access_token = request.data.get("access_token", FB_ACCESS_TOKEN)
+        platform.connected = True
+        platform.connected_at = timezone.now()
+        platform.save()
+        return Response({"status": "connected"})
+
+
+class FacebookDisconnectView(APIView):
+    """POST /api/platforms/facebook/disconnect/ — Clear token and mark disconnected."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        try:
+            platform = UserPlatform.objects.get(user=request.user, platform_name="Facebook")
+            platform.access_token = None
+            platform.connected = False
+            platform.connected_at = None
+            platform.save()
+        except UserPlatform.DoesNotExist:
+            pass
+        return Response({"status": "disconnected"})
+
+
+class FacebookStatusView(APIView):
+    """GET /api/platforms/facebook/status/ — Check if Facebook is connected."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        try:
+            platform = UserPlatform.objects.get(user=request.user, platform_name="Facebook")
+            return Response({"connected": platform.connected})
+        except UserPlatform.DoesNotExist:
+            return Response({"connected": False})
+
+
+# ── YouTube Connect/Disconnect/Status ─────────────────────────────────
+
+
+class YouTubeConnectView(APIView):
+    """POST /api/platforms/youtube/connect/ — Store the YT token and mark connected."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        platform, _ = UserPlatform.objects.get_or_create(
+            user=request.user, platform_name="YouTube"
+        )
+        platform.access_token = request.data.get("access_token", "")
+        platform.connected = True
+        platform.connected_at = timezone.now()
+        platform.save()
+        return Response({"status": "connected"})
+
+
+class YouTubeDisconnectView(APIView):
+    """POST /api/platforms/youtube/disconnect/ — Clear token and mark disconnected."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        try:
+            platform = UserPlatform.objects.get(user=request.user, platform_name="YouTube")
+            platform.access_token = None
+            platform.connected = False
+            platform.connected_at = None
+            platform.save()
+        except UserPlatform.DoesNotExist:
+            pass
+        return Response({"status": "disconnected"})
+
+
+class YouTubeStatusView(APIView):
+    """GET /api/platforms/youtube/status/ — Check if YouTube is connected."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        try:
+            platform = UserPlatform.objects.get(user=request.user, platform_name="YouTube")
+            return Response({"connected": platform.connected})
+        except UserPlatform.DoesNotExist:
+            return Response({"connected": False})

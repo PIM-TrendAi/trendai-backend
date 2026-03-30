@@ -27,8 +27,8 @@ class GeneratedVideoAdmin(admin.ModelAdmin):
 
 @admin.register(PostedVideo)
 class PostedVideoAdmin(admin.ModelAdmin):
-    list_display = ("session_id", "creator_id", "posted_at", "instagram_media_id", "tiktok_post_id")
-    search_fields = ("session_id", "creator_id", "instagram_media_id", "tiktok_post_id")
+    list_display = ("session_id", "creator_id", "posted_at", "tiktok_post_id")
+    search_fields = ("session_id", "creator_id", "tiktok_post_id")
     list_filter = ("posted_at",)
 
 @admin.register(ConnectedPlatform)

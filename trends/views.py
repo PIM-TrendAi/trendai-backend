@@ -2,13 +2,16 @@
 Trends views: list/filter/sort, detail, save/unsave, saved list.
 Supports filtering by platform (?platform=TikTok) and sorting (?sort=growth|score|recent).
 """
+import os
+import requests
+from django.db import ProgrammingError, OperationalError
 from rest_framework import generics, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 
-from .models import Trend, SavedTrend
-from .serializers import TrendSerializer, SavedTrendSerializer
+from .models import Trend, SavedTrend, FacebookReel, YouTubeVideo
+from .serializers import TrendSerializer, SavedTrendSerializer, FacebookReelSerializer, YouTubeVideoSerializer
 
 
 class TrendListView(generics.ListAPIView):
@@ -71,3 +74,118 @@ class SavedTrendListView(generics.ListAPIView):
 
     def get_queryset(self):
         return SavedTrend.objects.filter(user=self.request.user).select_related("trend")
+
+
+class FacebookReelListView(generics.ListAPIView):
+    """GET /api/trends/reels/ — List scraped Facebook Reels from the N8N-managed table."""
+    serializer_class = FacebookReelSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        try:
+            qs = FacebookReel.objects.all()
+            niche = self.request.query_params.get("niche")
+            if niche:
+                qs = qs.filter(niche__icontains=niche)
+            return qs.order_by("-play_count")[:20]
+        except (ProgrammingError, OperationalError):
+            return FacebookReel.objects.none()
+
+
+class FacebookScrapeTriggerView(APIView):
+    """POST /api/trends/facebook-scrape/ — Trigger the N8N Facebook scraping webhook."""
+    permission_classes = [IsAuthenticated]
+
+    SCRAPE_WEBHOOK_PATH = os.getenv("N8N_FACEBOOK_SCRAPE_WEBHOOK_PATH", "facebook-scrape")
+
+    def post(self, request):
+        user = request.user
+        niche = request.data.get("niche", "")
+        pages = request.data.get("pages", [{"url": "https://www.facebook.com/TunisieNumerique"}])
+
+        if not niche and user.categories:
+            niche = user.categories[0] if user.categories else "tech"
+
+        base_url = os.getenv("N8N_WEBHOOK_BASE_URL", "").rstrip("/")
+        if not base_url:
+            return Response({"error": "N8N_WEBHOOK_BASE_URL is not configured."}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        payload = {"niche": niche or "tech", "pages": pages}
+        endpoints = [
+            f"{base_url}/webhook/{self.SCRAPE_WEBHOOK_PATH}",
+            f"{base_url}/webhook-test/{self.SCRAPE_WEBHOOK_PATH}",
+        ]
+
+        for url in endpoints:
+            try:
+                resp = requests.post(url, json=payload, timeout=(5, 30))
+                if resp.status_code in (200, 201):
+                    return Response({"message": f"Facebook scraping triggered for niche '{niche}'.", "niche": niche})
+                if resp.status_code == 404:
+                    continue
+                return Response({"error": f"N8N returned {resp.status_code}: {resp.text[:200]}"}, status=status.HTTP_400_BAD_REQUEST)
+            except requests.exceptions.ReadTimeout:
+                return Response({"message": f"Facebook scraping triggered (N8N is processing).", "niche": niche})
+            except requests.exceptions.ConnectionError:
+                continue
+            except Exception as e:
+                return Response({"error": str(e)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        return Response({"error": "Could not reach N8N. Make sure the workflow is active."}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+
+class YouTubeVideoListView(generics.ListAPIView):
+    """GET /api/trends/youtube-videos/ — List scraped YouTube videos from the N8N-managed table."""
+    serializer_class = YouTubeVideoSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        try:
+            qs = YouTubeVideo.objects.all()
+            niche = self.request.query_params.get("niche")
+            if niche:
+                qs = qs.filter(niche__icontains=niche)
+            return qs.order_by("-vues")[:20]
+        except (ProgrammingError, OperationalError):
+            # Table doesn't exist yet (N8N hasn't run the first scrape)
+            return YouTubeVideo.objects.none()
+
+
+class YouTubeScrapeTriggerView(APIView):
+    """POST /api/trends/youtube-scrape/ — Trigger the N8N YouTube scraping webhook."""
+    permission_classes = [IsAuthenticated]
+
+    SCRAPE_WEBHOOK_PATH = os.getenv("N8N_YOUTUBE_SCRAPE_WEBHOOK_PATH", "youtube-scrape")
+
+    def post(self, request):
+        niche = request.data.get("niche", "")
+
+        if not niche and hasattr(request.user, 'categories') and request.user.categories:
+            niche = request.user.categories[0]
+
+        base_url = os.getenv("N8N_WEBHOOK_BASE_URL", "").rstrip("/")
+        if not base_url:
+            return Response({"error": "N8N_WEBHOOK_BASE_URL is not configured."}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        payload = {"niche": niche or "tech"}
+        endpoints = [
+            f"{base_url}/webhook/{self.SCRAPE_WEBHOOK_PATH}",
+            f"{base_url}/webhook-test/{self.SCRAPE_WEBHOOK_PATH}",
+        ]
+
+        for url in endpoints:
+            try:
+                resp = requests.post(url, json=payload, timeout=(5, 30))
+                if resp.status_code in (200, 201):
+                    return Response({"message": f"YouTube scraping triggered for niche '{niche}'.", "niche": niche})
+                if resp.status_code == 404:
+                    continue
+                return Response({"error": f"N8N returned {resp.status_code}: {resp.text[:200]}"}, status=status.HTTP_400_BAD_REQUEST)
+            except requests.exceptions.ReadTimeout:
+                return Response({"message": f"YouTube scraping triggered (N8N is processing).", "niche": niche})
+            except requests.exceptions.ConnectionError:
+                continue
+            except Exception as e:
+                return Response({"error": str(e)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        return Response({"error": "Could not reach N8N. Make sure the workflow is active."}, status=status.HTTP_503_SERVICE_UNAVAILABLE)

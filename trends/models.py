@@ -74,3 +74,52 @@ class SavedTrend(models.Model):
 
     def __str__(self):
         return f"{self.user.email} → {self.trend.hashtag}"
+
+
+class FacebookReel(models.Model):
+    """
+    Maps to the facebook_reels table populated by the N8N Facebook scraping workflow.
+    managed=False: Django won't touch the schema — N8N/SQL migration handles it.
+    """
+    reel_id = models.TextField(unique=True)
+    reel_url = models.TextField(null=True, blank=True)
+    page_url = models.TextField(null=True, blank=True)
+    text = models.TextField(null=True, blank=True)
+    created_at = models.DateTimeField(null=True, blank=True)
+    play_count = models.IntegerField(default=0)
+    duration_ms = models.IntegerField(default=0)
+    niche = models.TextField(null=True, blank=True)
+    status = models.TextField(default='scraped')
+    thumbnail_url = models.TextField(null=True, blank=True)
+    created_db = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        managed = False
+        db_table = "facebook_reels"
+        ordering = ["-play_count"]
+
+    def __str__(self):
+        return f"{self.niche} - {self.reel_id}"
+
+
+class YouTubeVideo(models.Model):
+    """
+    Maps to the youtube_videos table populated by the N8N YouTube scraping workflow.
+    managed=False: Django won't touch the schema — N8N/SQL migration handles it.
+    """
+    video_id = models.TextField(unique=True)
+    titre = models.TextField(null=True, blank=True)
+    description = models.TextField(null=True, blank=True)
+    tags = models.TextField(null=True, blank=True)
+    vues = models.BigIntegerField(default=0)
+    niche = models.TextField(null=True, blank=True)
+    region = models.TextField(default='TN')
+    scraped_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        managed = False
+        db_table = "youtube_videos"
+        ordering = ["-vues"]
+
+    def __str__(self):
+        return f"{self.niche} - {self.titre}"

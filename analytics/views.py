@@ -270,6 +270,127 @@ class SavedTrendAnalyticsView(APIView):
         })
 
 
+# ── Instagram Stats ──────────────────────────────────────────────────
+
+import os
+
+IG_BUSINESS_ACCOUNT_ID = os.getenv("IG_BUSINESS_ACCOUNT_ID", "17841480637267691")
+IG_GRAPH_BASE = "https://graph.facebook.com/v21.0"
+
+
+def _get_instagram_token(user):
+    """Return the stored Instagram access token for *user*, or None."""
+    try:
+        platform = UserPlatform.objects.get(user=user, platform_name="Instagram")
+        return platform.access_token if platform.connected else None
+    except UserPlatform.DoesNotExist:
+        return None
+
+
+def _fetch_ig_media(token, limit=20):
+    """Fetch recent Instagram media with insights."""
+    try:
+        # Get recent media
+        resp = httpx.get(
+            f"{IG_GRAPH_BASE}/{IG_BUSINESS_ACCOUNT_ID}/media",
+            params={
+                "fields": "id,caption,media_type,timestamp,thumbnail_url,permalink,like_count,comments_count",
+                "limit": limit,
+                "access_token": token,
+            },
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            return []
+        media = resp.json().get("data", [])
+
+        # Fetch insights for each media
+        for item in media:
+            try:
+                metrics = "reach,plays" if item.get("media_type") == "VIDEO" else "reach,impressions"
+                r = httpx.get(
+                    f"{IG_GRAPH_BASE}/{item['id']}/insights",
+                    params={"metric": metrics, "access_token": token},
+                    timeout=10,
+                )
+                if r.status_code == 200:
+                    for m in r.json().get("data", []):
+                        item[m["name"]] = m["values"][0]["value"] if m.get("values") else 0
+            except Exception:
+                pass
+        return media
+    except httpx.HTTPError:
+        return []
+
+
+def _fetch_ig_profile(token):
+    """Fetch Instagram profile info."""
+    try:
+        resp = httpx.get(
+            f"{IG_GRAPH_BASE}/{IG_BUSINESS_ACCOUNT_ID}",
+            params={
+                "fields": "followers_count,media_count,username,profile_picture_url",
+                "access_token": token,
+            },
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            return resp.json()
+    except httpx.HTTPError:
+        pass
+    return None
+
+
+class InstagramStatsView(APIView):
+    """GET /api/analytics/instagram/ — Instagram media stats from Graph API."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        token = _get_instagram_token(request.user)
+        if not token:
+            return Response({
+                "connected": False,
+                "profile": None,
+                "media": [],
+                "summary": {"total_likes": 0, "total_comments": 0, "total_reach": 0, "total_plays": 0},
+            })
+
+        profile = _fetch_ig_profile(token)
+        media = _fetch_ig_media(token)
+
+        total_likes = sum(m.get("like_count", 0) for m in media)
+        total_comments = sum(m.get("comments_count", 0) for m in media)
+        total_reach = sum(m.get("reach", 0) for m in media)
+        total_plays = sum(m.get("plays", 0) for m in media)
+
+        return Response({
+            "connected": True,
+            "profile": profile,
+            "media": [
+                {
+                    "id": m.get("id"),
+                    "caption": (m.get("caption") or "")[:100],
+                    "media_type": m.get("media_type"),
+                    "timestamp": m.get("timestamp"),
+                    "permalink": m.get("permalink"),
+                    "thumbnail_url": m.get("thumbnail_url"),
+                    "likes": m.get("like_count", 0),
+                    "comments": m.get("comments_count", 0),
+                    "reach": m.get("reach", 0),
+                    "plays": m.get("plays", 0),
+                }
+                for m in media
+            ],
+            "summary": {
+                "total_likes": total_likes,
+                "total_comments": total_comments,
+                "total_reach": total_reach,
+                "total_plays": total_plays,
+                "followers": profile.get("followers_count", 0) if profile else 0,
+            },
+        })
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _fmt(n):

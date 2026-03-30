@@ -33,6 +33,7 @@ class CreatorSession(models.Model):
     creator_id = models.CharField(max_length=255, help_text="User ID from Django frontend")
     selected_video_id = models.CharField(max_length=255, help_text="The video_id from trending_videos the creator chose")
     niche = models.CharField(max_length=255, blank=True, null=True)
+    platform = models.CharField(max_length=50, default='tiktok', help_text="Platform: tiktok, instagram, facebook, youtube")
     status = models.CharField(max_length=100, default='script_generation')
     created_at = models.DateTimeField(auto_now_add=True)
 

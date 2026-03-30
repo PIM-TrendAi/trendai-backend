@@ -2,7 +2,7 @@
 Trends app serializers.
 """
 from rest_framework import serializers
-from .models import Trend, SavedTrend
+from .models import Trend, SavedTrend, FacebookReel, YouTubeVideo
 
 
 class TrendSerializer(serializers.ModelSerializer):
@@ -31,3 +31,15 @@ class SavedTrendSerializer(serializers.ModelSerializer):
     class Meta:
         model = SavedTrend
         fields = ["id", "trend", "saved_at"]
+
+
+class FacebookReelSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = FacebookReel
+        fields = "__all__"
+
+
+class YouTubeVideoSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = YouTubeVideo
+        fields = "__all__"

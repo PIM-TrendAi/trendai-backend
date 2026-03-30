@@ -11,6 +11,8 @@ from .views import (
     ConnectedPlatformsView,
     PlatformAuthURLView,
     PlatformCallbackView,
+    N8NCallbackView,
+    MixVideoView,
 )
 
 urlpatterns = [
@@ -26,4 +28,6 @@ urlpatterns = [
     path('platforms/', ConnectedPlatformsView.as_view(), name='connected-platforms'),
     path('platforms/<str:platform>/url/', PlatformAuthURLView.as_view(), name='platform-auth-url'),
     path('platforms/<str:platform>/callback/', PlatformCallbackView.as_view(), name='platform-callback'),
+    path('callback/', N8NCallbackView.as_view(), name='n8n-callback'),
+    path('mix-video/', MixVideoView.as_view(), name='mix-video'),
 ]

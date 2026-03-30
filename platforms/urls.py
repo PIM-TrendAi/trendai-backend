@@ -1,5 +1,11 @@
 from django.urls import path
-from .views import PlatformListView, PlatformUpdateView, TikTokInternalTokenView, TikTokDisconnectView, TikTokDebugView
+from .views import (
+    PlatformListView, PlatformUpdateView,
+    TikTokInternalTokenView, TikTokDisconnectView, TikTokDebugView,
+    InstagramConnectView, InstagramDisconnectView, InstagramStatusView,
+    FacebookConnectView, FacebookDisconnectView, FacebookStatusView,
+    YouTubeConnectView, YouTubeDisconnectView, YouTubeStatusView,
+)
 
 urlpatterns = [
     path("", PlatformListView.as_view(), name="platform-list"),
@@ -7,4 +13,13 @@ urlpatterns = [
     path("tiktok/internal-token/", TikTokInternalTokenView.as_view(), name="tiktok-internal-token"),
     path("tiktok/disconnect/", TikTokDisconnectView.as_view(), name="tiktok-disconnect"),
     path("tiktok/debug/", TikTokDebugView.as_view(), name="tiktok-debug"),
+    path("instagram/connect/", InstagramConnectView.as_view(), name="instagram-connect"),
+    path("instagram/disconnect/", InstagramDisconnectView.as_view(), name="instagram-disconnect"),
+    path("instagram/status/", InstagramStatusView.as_view(), name="instagram-status"),
+    path("facebook/connect/", FacebookConnectView.as_view(), name="facebook-connect"),
+    path("facebook/disconnect/", FacebookDisconnectView.as_view(), name="facebook-disconnect"),
+    path("facebook/status/", FacebookStatusView.as_view(), name="facebook-status"),
+    path("youtube/connect/", YouTubeConnectView.as_view(), name="youtube-connect"),
+    path("youtube/disconnect/", YouTubeDisconnectView.as_view(), name="youtube-disconnect"),
+    path("youtube/status/", YouTubeStatusView.as_view(), name="youtube-status"),
 ]
