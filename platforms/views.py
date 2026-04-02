@@ -176,6 +176,18 @@ class TikTokDisconnectView(APIView):
         return Response({"status": "disconnected"})
 
 
+class TikTokStatusView(APIView):
+    """GET /api/platforms/tiktok/status/ — Check if TikTok is connected."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        try:
+            platform = UserPlatform.objects.get(user=request.user, platform_name="TikTok")
+            return Response({"connected": platform.connected})
+        except UserPlatform.DoesNotExist:
+            return Response({"connected": False})
+
+
 # ── Instagram Connect/Disconnect/Status ──────────────────────────────
 # Since it's a single hardcoded IG Business account, we store the token
 # in UserPlatform so the analytics can query the Instagram Graph API.

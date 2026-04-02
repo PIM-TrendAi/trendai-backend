@@ -1,7 +1,7 @@
 from django.urls import path
 from .views import (
     PlatformListView, PlatformUpdateView,
-    TikTokInternalTokenView, TikTokDisconnectView, TikTokDebugView,
+    TikTokInternalTokenView, TikTokDisconnectView, TikTokDebugView, TikTokStatusView,
     InstagramConnectView, InstagramDisconnectView, InstagramStatusView,
     FacebookConnectView, FacebookDisconnectView, FacebookStatusView,
     YouTubeConnectView, YouTubeDisconnectView, YouTubeStatusView,
@@ -12,6 +12,7 @@ urlpatterns = [
     path("<int:pk>/", PlatformUpdateView.as_view(), name="platform-update"),
     path("tiktok/internal-token/", TikTokInternalTokenView.as_view(), name="tiktok-internal-token"),
     path("tiktok/disconnect/", TikTokDisconnectView.as_view(), name="tiktok-disconnect"),
+    path("tiktok/status/", TikTokStatusView.as_view(), name="tiktok-status"),
     path("tiktok/debug/", TikTokDebugView.as_view(), name="tiktok-debug"),
     path("instagram/connect/", InstagramConnectView.as_view(), name="instagram-connect"),
     path("instagram/disconnect/", InstagramDisconnectView.as_view(), name="instagram-disconnect"),
