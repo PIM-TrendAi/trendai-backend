@@ -192,7 +192,7 @@ class StartWorkflowView(APIView):
     TIKTOK_START_WEBHOOK_ID = os.getenv("N8N_START_WEBHOOK_ID", "205b7271-5246-4e81-80b4-7b93579ab006")
     TIKTOK_START_WEBHOOK_PATH = os.getenv("N8N_START_WEBHOOK_PATH", "tiktok-creator-select")
     INSTAGRAM_START_WEBHOOK_PATH = "instagram-start"
-    FACEBOOK_START_WEBHOOK_PATH = os.getenv("N8N_FACEBOOK_START_WEBHOOK_PATH", "generate")  # Facebook workflow path
+    FACEBOOK_START_WEBHOOK_PATH = os.getenv("N8N_FACEBOOK_START_WEBHOOK_PATH", "facebook-start")
     YOUTUBE_START_WEBHOOK_PATH = os.getenv("N8N_YOUTUBE_START_WEBHOOK_PATH", "generate-video-v2")
 
     def post(self, request):
@@ -280,7 +280,7 @@ class TriggerScrapingView(APIView):
     SCRAPE_WEBHOOK_IDS = {
         "tiktok": "8a4b64f3-ac29-4591-a1b7-4c2089f92bb4",
         "instagram": "instagram-scrape",
-        "facebook": os.getenv("N8N_FACEBOOK_SCRAPE_WEBHOOK_PATH", "scrape"),  # Facebook workflow scrape path
+        "facebook": os.getenv("N8N_FACEBOOK_SCRAPE_WEBHOOK_PATH", "facebook-scrape"),
         "youtube": os.getenv("N8N_YOUTUBE_SCRAPE_WEBHOOK_PATH", "youtube-scrape"),
     }
 
@@ -370,14 +370,6 @@ class ApproveVideoView(APIView):
 
         if platform == "instagram":
             success = trigger_n8n_webhook(self.INSTAGRAM_VIDEO_APPROVE_PATH, payload)
-        elif platform == "facebook":
-            # Facebook workflow: trigger dedicated approve webhook
-            fb_approve_path = os.getenv("N8N_FACEBOOK_VIDEO_APPROVE_PATH", "facebook-video-approve")
-            success = trigger_n8n_webhook(fb_approve_path, payload)
-        elif platform == "youtube":
-            # YouTube workflow: trigger dedicated approve webhook
-            yt_approve_path = os.getenv("N8N_YOUTUBE_VIDEO_APPROVE_PATH", "youtube-video-approve")
-            success = trigger_n8n_webhook(yt_approve_path, payload)
         else:
             # TikTok path: include access token
             token = ""
@@ -390,7 +382,7 @@ class ApproveVideoView(APIView):
                 payload,
                 fallback_ids=[self.VIDEO_APPROVE_WEBHOOK_PATH],
             )
-
+        
         if not success:
             return Response({"error": "Failed proxying to n8n"}, status=400)
 
@@ -934,60 +926,103 @@ class RecommendationsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        import random
         user = request.user
-        niches = list(user.categories) if user.categories else ['tech']
 
-        # ── 1. Fetch top trending videos (used as inspiration) ────────────
-        trending = list(TrendingVideo.objects.order_by('rank')[:15])
+        # Accept ?niche= param — supports multiple comma-separated niches
+        niche_param = request.query_params.get('niche', None)
+        if niche_param:
+            niches = [n.strip() for n in niche_param.split(',') if n.strip()]
+        else:
+            niches = list(user.categories) if user.categories else ['tech']
 
-        # ── 2. Try Ollama (local, free) ──────────────────────────────────
+        # ── 1. Fetch trending + shuffle so every call returns different results
+        trending_all = list(TrendingVideo.objects.order_by('rank')[:20])
+        random.shuffle(trending_all)
+        trending = trending_all[:10]
+
+        # ── 2. Try Groq (free, llama-3.3-70b) ────────────────────────────
         if trending:
             try:
-                recs = self._ollama_recommendations(niches, trending)
+                recs = self._groq_recommendations(niches, trending)
                 if recs:
                     return Response(recs)
             except Exception as e:
-                print(f"[recommendations] Ollama failed: {e}")
+                print(f"[recommendations] Groq failed: {e}")
 
         # ── 3. Rule-based fallback ───────────────────────────────────────
         return Response(self._rule_based(niches, trending))
 
     # ------------------------------------------------------------------ #
-    def _ollama_recommendations(self, niches, trending):
+    def _groq_recommendations(self, niches, trending):
         import json
+        import random
+        from datetime import datetime
 
-        model = os.getenv('OLLAMA_MODEL', 'llama3.2:1b')
-        ollama_url = os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434')
+        groq_key = os.getenv('GROQ_API_KEY', '')
+        if not groq_key:
+            return None
 
-        # Use top 5 videos as inspiration (keep prompt short for small model)
-        video_ids = [v.video_id for v in trending[:5]]
-        niche_str = ', '.join(niches)
+        # Cycle niches across the 3 slots: [fitness, tech] → [fitness, tech, fitness]
+        niche_cycle = (niches * 3)[:3]
+        video_examples = [
+            f'"{v.title}" by {v.author} — views: {v.views}, hashtags: {", ".join(v.hashtags[:3]) if v.hashtags else "none"}, video_id: {v.video_id}'
+            for v in trending[:6]
+        ]
 
-        prompt = (
-            f'Give 3 social media video ideas for a creator in: {niche_str}.\n'
-            f'Use these video IDs as inspiration (pick one per idea): {", ".join(video_ids[:3])}.\n'
-            f'Reply ONLY with a JSON array. Each item: {{"title":"...","hook":"...","best_time":"7:00 PM","niche":"{niches[0]}","platform":"tiktok","video_id":"...","angle":"..."}}\n'
-            f'No explanation. No markdown. JSON only.'
+        hook_styles = [
+            'pattern interrupt ("Nobody tells you this but...")',
+            'curiosity gap ("The real reason X happens will shock you")',
+            'specific number ("I gained 10k followers doing this ONE thing")',
+            'controversy ("Unpopular opinion about {niche}...")',
+            'personal story ("I wasted 6 months before I learned this")',
+            'direct challenge ("Stop doing X if you actually want Y")',
+        ]
+        chosen_style = random.choice(hook_styles).format(niche=niche_cycle[0])
+        today = datetime.now().strftime('%A')
+
+        system_prompt = 'You are a viral TikTok content strategist. Always respond with valid JSON only, no markdown.'
+        user_prompt = (
+            f'It is {today}. Give exactly 3 viral TikTok video ideas. Each idea targets a specific niche:\n'
+            f'- Idea 1 niche: {niche_cycle[0]}\n'
+            f'- Idea 2 niche: {niche_cycle[1]}\n'
+            f'- Idea 3 niche: {niche_cycle[2]}\n\n'
+            f'Trending videos to inspire you (assign one video_id per idea, all different):\n'
+            + '\n'.join(video_examples) +
+            f'\n\nHook style for this session: {chosen_style}\n\n'
+            f'Return ONLY a JSON object with a "recommendations" array. Each item:\n'
+            f'{{"title":"...","hook":"...","best_time":"7:00 PM","niche":"<the niche for that idea>","platform":"tiktok","video_id":"...","angle":"..."}}\n'
+            f'Each hook must be scroll-stopping (first 3 seconds). All 3 ideas must feel completely different. JSON only.'
         )
 
         resp = requests.post(
-            f"{ollama_url}/api/generate",
-            json={"model": model, "prompt": prompt, "stream": False},
-            timeout=90,
+            'https://api.groq.com/openai/v1/chat/completions',
+            headers={
+                'Authorization': f'Bearer {groq_key}',
+                'Content-Type': 'application/json',
+            },
+            json={
+                'model': 'llama-3.3-70b-versatile',
+                'messages': [
+                    {'role': 'system', 'content': system_prompt},
+                    {'role': 'user', 'content': user_prompt},
+                ],
+                'response_format': {'type': 'json_object'},
+                'max_tokens': 700,
+                'temperature': 0.9,
+            },
+            timeout=15,
         )
         resp.raise_for_status()
-        text = resp.json().get("response", "").strip()
-        # Strip markdown code fences if present
-        if '```' in text:
-            text = text.split('```')[1]
-            if text.startswith('json'):
-                text = text[4:]
-        # Extract JSON array
-        start = text.find('[')
-        end = text.rfind(']') + 1
-        if start == -1 or end == 0:
-            return None
-        return json.loads(text[start:end])
+        content = resp.json()['choices'][0]['message']['content']
+        data = json.loads(content)
+        # Handle {"recommendations": [...]} or bare array
+        if isinstance(data, list):
+            return data
+        for val in data.values():
+            if isinstance(val, list):
+                return val
+        return None
 
     # ------------------------------------------------------------------ #
     def _rule_based(self, niches, trending):
