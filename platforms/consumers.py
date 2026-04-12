@@ -28,9 +28,14 @@ TIKTOK_VIDEO_QUERY_URL = "https://open.tiktokapis.com/v2/video/query/"
 POLL_INTERVAL_SECONDS = 30
 MAX_VIDEOS = 20
 
+FB_GRAPH_BASE = "https://graph.facebook.com/v21.0"
+import os
+FB_PAGE_ID = os.getenv("FACEBOOK_PAGE_ID", "me")
+
 # Close codes
 CODE_UNAUTHORIZED = 4001
 CODE_NO_TIKTOK_TOKEN = 4002
+CODE_NO_FB_TOKEN = 4003
 
 
 class TikTokStatsConsumer(AsyncWebsocketConsumer):
@@ -214,6 +219,126 @@ class TikTokStatsConsumer(AsyncWebsocketConsumer):
                 "avg_watch_time_seconds": 0,
             })
         return {"videos": videos, "last_updated": self._now_iso()}
+
+    @staticmethod
+    def _now_iso() -> str:
+        return datetime.now(tz=timezone.utc).isoformat()
+
+
+class FacebookStatsConsumer(AsyncWebsocketConsumer):
+    """Pushes real-time Facebook page post stats to the Flutter client."""
+
+    async def connect(self) -> None:
+        query_string = self.scope["query_string"].decode()
+        params = parse_qs(query_string)
+        token_list = params.get("token", [])
+
+        if not token_list:
+            await self.close(code=CODE_UNAUTHORIZED)
+            return
+
+        User = get_user_model()
+        try:
+            validated = UntypedToken(token_list[0])
+            user_id = validated.payload.get("user_id")
+            if not user_id:
+                raise TokenError("Missing user_id claim")
+            self.user = await sync_to_async(User.objects.get)(pk=user_id)
+        except (TokenError, User.DoesNotExist):
+            await self.close(code=CODE_UNAUTHORIZED)
+            return
+
+        self._platform = await self._get_fb_platform()
+        if not self._platform or not self._platform.access_token:
+            await self.accept()
+            await self.send(json.dumps({"error": "facebook_not_connected"}))
+            await self.close(code=CODE_NO_FB_TOKEN)
+            return
+
+        await self.accept()
+        self._http_client = httpx.AsyncClient(timeout=15.0)
+        self._poll_task = asyncio.create_task(self._polling_loop())
+
+    async def disconnect(self, close_code: int) -> None:
+        if hasattr(self, "_poll_task"):
+            self._poll_task.cancel()
+            try:
+                await self._poll_task
+            except asyncio.CancelledError:
+                pass
+        if hasattr(self, "_http_client"):
+            await self._http_client.aclose()
+
+    async def receive(self, text_data: str) -> None:
+        try:
+            data = json.loads(text_data)
+        except json.JSONDecodeError:
+            return
+        if data.get("action") == "refresh" and hasattr(self, "_poll_task"):
+            payload = await self._fetch_fb_stats()
+            if payload:
+                await self.send(json.dumps(payload))
+
+    async def _polling_loop(self) -> None:
+        while True:
+            payload = await self._fetch_fb_stats()
+            if payload is None:
+                break
+            await self.send(json.dumps(payload))
+            await asyncio.sleep(POLL_INTERVAL_SECONDS)
+
+    async def _fetch_fb_stats(self) -> Optional[dict]:
+        platform = await self._get_fb_platform()
+        if not platform or not platform.access_token:
+            await self.send(json.dumps({"error": "facebook_not_connected"}))
+            await self.close()
+            return None
+
+        access_token = platform.access_token
+
+        try:
+            resp = await self._http_client.get(
+                f"{FB_GRAPH_BASE}/{FB_PAGE_ID}/posts",
+                params={
+                    "fields": "id,message,created_time,full_picture,permalink_url,"
+                              "likes.summary(true),comments.summary(true),shares",
+                    "limit": 20,
+                    "access_token": access_token,
+                },
+            )
+            if resp.status_code == 401:
+                await self.send(json.dumps({"error": "facebook_token_expired"}))
+                await self.close()
+                return None
+            if resp.status_code != 200:
+                return {"posts": [], "last_updated": self._now_iso()}
+
+            posts_raw = resp.json().get("data", [])
+        except httpx.HTTPError:
+            await self.send(json.dumps({"error": "facebook_api_unavailable"}))
+            return {"posts": [], "last_updated": self._now_iso()}
+
+        posts = []
+        for p in posts_raw:
+            posts.append({
+                "post_id": p.get("id", ""),
+                "message": (p.get("message") or "")[:120],
+                "created_time": p.get("created_time", ""),
+                "thumbnail_url": p.get("full_picture", ""),
+                "permalink": p.get("permalink_url", ""),
+                "likes": p.get("likes", {}).get("summary", {}).get("total_count", 0),
+                "comments": p.get("comments", {}).get("summary", {}).get("total_count", 0),
+                "shares": p.get("shares", {}).get("count", 0),
+            })
+
+        return {"posts": posts, "last_updated": self._now_iso()}
+
+    @sync_to_async
+    def _get_fb_platform(self) -> "UserPlatform | None":
+        try:
+            return UserPlatform.objects.get(user=self.user, platform_name="Facebook")
+        except UserPlatform.DoesNotExist:
+            return None
 
     @staticmethod
     def _now_iso() -> str:

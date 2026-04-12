@@ -1,6 +1,7 @@
 from django.urls import path
 from .views import (
     TrendingVideoListView,
+    FacebookReelsListView,
     SessionStatusView,
     StartWorkflowView,
     GetLatestSessionView,
@@ -21,6 +22,7 @@ from .views import (
 
 urlpatterns = [
     path('trending_videos/', TrendingVideoListView.as_view(), name='trending-videos-list'),
+    path('facebook_reels/', FacebookReelsListView.as_view(), name='facebook-reels-list'),
     path('sessions/latest/', GetLatestSessionView.as_view(), name='get-latest-session'),
     path('sessions/<str:session_id>/', SessionStatusView.as_view(), name='get-session-status'),
     path('start/', StartWorkflowView.as_view(), name='start-workflow'),

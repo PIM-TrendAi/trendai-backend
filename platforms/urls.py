@@ -3,6 +3,7 @@ from .views import (
     PlatformListView, PlatformUpdateView,
     TikTokInternalTokenView, TikTokDisconnectView, TikTokDebugView, TikTokStatusView,
     InstagramConnectView, InstagramDisconnectView, InstagramStatusView,
+    FacebookOAuthStartView, FacebookOAuthCallbackView,
     FacebookConnectView, FacebookDisconnectView, FacebookStatusView,
     YouTubeConnectView, YouTubeDisconnectView, YouTubeStatusView,
 )
@@ -17,6 +18,8 @@ urlpatterns = [
     path("instagram/connect/", InstagramConnectView.as_view(), name="instagram-connect"),
     path("instagram/disconnect/", InstagramDisconnectView.as_view(), name="instagram-disconnect"),
     path("instagram/status/", InstagramStatusView.as_view(), name="instagram-status"),
+    path("facebook/oauth/start/", FacebookOAuthStartView.as_view(), name="facebook-oauth-start"),
+    path("facebook/oauth/callback/", FacebookOAuthCallbackView.as_view(), name="facebook-oauth-callback"),
     path("facebook/connect/", FacebookConnectView.as_view(), name="facebook-connect"),
     path("facebook/disconnect/", FacebookDisconnectView.as_view(), name="facebook-disconnect"),
     path("facebook/status/", FacebookStatusView.as_view(), name="facebook-status"),

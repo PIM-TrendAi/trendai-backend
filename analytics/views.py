@@ -185,7 +185,7 @@ class EngagementView(APIView):
 
 
 class PlatformPerformanceView(APIView):
-    """GET /api/analytics/platforms/ — Bar chart (TikTok real, others N/A)."""
+    """GET /api/analytics/platforms/ — Bar chart (TikTok + Facebook real, others N/A)."""
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -195,12 +195,18 @@ class PlatformPerformanceView(APIView):
             videos = _fetch_all_videos(token)
             tiktok_views = sum(v.get("view_count", 0) for v in videos)
 
+        fb_token = _get_facebook_token(request.user)
+        fb_views = 0
+        if fb_token:
+            fb_posts = _fetch_fb_posts(fb_token)
+            fb_views = sum(p.get("impressions", 0) for p in fb_posts)
+
         return Response({
             "data": [
                 {"name": "TikTok",    "value": tiktok_views},
                 {"name": "Instagram", "value": 0},
                 {"name": "YouTube",   "value": 0},
-                {"name": "Facebook",  "value": 0},
+                {"name": "Facebook",  "value": fb_views},
             ]
         })
 
@@ -387,6 +393,132 @@ class InstagramStatsView(APIView):
                 "total_reach": total_reach,
                 "total_plays": total_plays,
                 "followers": profile.get("followers_count", 0) if profile else 0,
+            },
+        })
+
+
+# ── Facebook Stats ────────────────────────────────────────────────────────────
+
+FB_GRAPH_BASE = "https://graph.facebook.com/v21.0"
+FB_PAGE_ID = os.getenv("FACEBOOK_PAGE_ID", "me")
+
+
+def _get_facebook_token(user):
+    """Return the stored Facebook access token for *user*, or None."""
+    try:
+        platform = UserPlatform.objects.get(user=user, platform_name="Facebook")
+        return platform.access_token if platform.connected else None
+    except UserPlatform.DoesNotExist:
+        return None
+
+
+def _fetch_fb_page_info(token):
+    """Fetch Facebook page name, fan_count, followers_count."""
+    try:
+        resp = httpx.get(
+            f"{FB_GRAPH_BASE}/{FB_PAGE_ID}",
+            params={"fields": "name,fan_count,followers_count,picture.type(large)", "access_token": token},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            return resp.json()
+    except httpx.HTTPError:
+        pass
+    return None
+
+
+def _fetch_fb_posts(token, limit=20):
+    """Fetch recent page posts with likes, comments, shares and impressions."""
+    try:
+        resp = httpx.get(
+            f"{FB_GRAPH_BASE}/{FB_PAGE_ID}/posts",
+            params={
+                "fields": "id,message,created_time,full_picture,permalink_url,"
+                          "likes.summary(true),comments.summary(true),shares",
+                "limit": limit,
+                "access_token": token,
+            },
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            return []
+        posts = resp.json().get("data", [])
+
+        # Fetch impressions per post (best-effort)
+        for post in posts:
+            try:
+                r = httpx.get(
+                    f"{FB_GRAPH_BASE}/{post['id']}/insights",
+                    params={"metric": "post_impressions_unique", "access_token": token},
+                    timeout=8,
+                )
+                if r.status_code == 200:
+                    for m in r.json().get("data", []):
+                        if m.get("name") == "post_impressions_unique":
+                            values = m.get("values", [])
+                            post["impressions"] = values[-1]["value"] if values else 0
+            except Exception:
+                post.setdefault("impressions", 0)
+
+        return posts
+    except httpx.HTTPError:
+        return []
+
+
+class FacebookStatsView(APIView):
+    """GET /api/analytics/facebook/ — Facebook page stats from Graph API."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        token = _get_facebook_token(request.user)
+        if not token:
+            return Response({
+                "connected": False,
+                "profile": None,
+                "posts": [],
+                "summary": {"total_likes": 0, "total_comments": 0, "total_impressions": 0, "total_shares": 0},
+            })
+
+        profile = _fetch_fb_page_info(token)
+        posts = _fetch_fb_posts(token)
+
+        def _likes(p):
+            return p.get("likes", {}).get("summary", {}).get("total_count", 0)
+
+        def _comments(p):
+            return p.get("comments", {}).get("summary", {}).get("total_count", 0)
+
+        def _shares(p):
+            return p.get("shares", {}).get("count", 0)
+
+        total_likes = sum(_likes(p) for p in posts)
+        total_comments = sum(_comments(p) for p in posts)
+        total_impressions = sum(p.get("impressions", 0) for p in posts)
+        total_shares = sum(_shares(p) for p in posts)
+
+        return Response({
+            "connected": True,
+            "profile": profile,
+            "posts": [
+                {
+                    "id": p.get("id"),
+                    "message": (p.get("message") or "")[:120],
+                    "created_time": p.get("created_time"),
+                    "thumbnail_url": p.get("full_picture"),
+                    "permalink": p.get("permalink_url"),
+                    "likes": _likes(p),
+                    "comments": _comments(p),
+                    "shares": _shares(p),
+                    "impressions": p.get("impressions", 0),
+                }
+                for p in posts
+            ],
+            "summary": {
+                "total_likes": total_likes,
+                "total_comments": total_comments,
+                "total_impressions": total_impressions,
+                "total_shares": total_shares,
+                "fans": profile.get("fan_count", 0) if profile else 0,
             },
         })
 

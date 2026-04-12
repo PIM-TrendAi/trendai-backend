@@ -70,6 +70,24 @@ class TrendingVideoListView(generics.ListAPIView):
     serializer_class = TrendingVideoSerializer
     permission_classes = [IsAuthenticated]
 
+    NICHE_KEYWORDS = {
+        'entertainment': ['entertainment', 'funny', 'comedy', 'viral', 'fun', 'meme', 'prank', 'challenge', 'skit'],
+        'education': ['education', 'learn', 'tutorial', 'howto', 'tips', 'facts', 'science', 'history', 'study'],
+        'business': ['business', 'entrepreneur', 'startup', 'marketing', 'sales', 'ceo', 'hustle', 'success'],
+        'finance': ['finance', 'money', 'investing', 'stocks', 'crypto', 'budget', 'wealth', 'financial', 'income'],
+        'fitness': ['fitness', 'workout', 'gym', 'health', 'exercise', 'diet', 'nutrition', 'training', 'muscle'],
+        'motivation': ['motivation', 'mindset', 'inspire', 'success', 'goals', 'growth', 'positivity', 'mindfulness'],
+        'gaming': ['gaming', 'gamer', 'game', 'gameplay', 'esports', 'twitch', 'ps5', 'xbox', 'minecraft', 'fortnite'],
+        'art': ['art', 'design', 'drawing', 'painting', 'creative', 'artist', 'illustration', 'sketch', 'digital'],
+        'fashion': ['fashion', 'style', 'outfit', 'ootd', 'clothing', 'beauty', 'makeup', 'skincare', 'aesthetic'],
+        'cooking': ['cooking', 'food', 'recipe', 'chef', 'baking', 'meal', 'kitchen', 'eat', 'delicious'],
+        'travel': ['travel', 'adventure', 'explore', 'trip', 'vacation', 'wanderlust', 'destination', 'vlog'],
+        'tech': ['tech', 'technology', 'coding', 'programming', 'ai', 'software', 'developer', 'gadget', 'review'],
+        'podcast': ['podcast', 'interview', 'talk', 'discussion', 'story', 'storytelling', 'narration'],
+        'news': ['news', 'politics', 'world', 'breaking', 'update', 'current', 'economy', 'report'],
+        'storytelling': ['story', 'storytime', 'narrative', 'tale', 'vlog', 'experience', 'life', 'pov'],
+    }
+
     def get_queryset(self):
         # Get base queryset ordered by rank
         queryset = TrendingVideo.objects.order_by('rank')
@@ -77,8 +95,9 @@ class TrendingVideoListView(generics.ListAPIView):
         # Apply niche filtering if provided
         niche = self.request.query_params.get('niche')
         if niche:
-            # Clean up the niche string for search (e.g., 'Tech & Gadgets' -> ['tech', 'gadgets'])
-            search_terms = [t.strip().lower() for t in niche.replace('&', ' ').split() if len(t.strip()) > 2]
+            search_key = niche.lower().strip()
+            # If the specific niche is in our dictionary, use all its related keywords
+            search_terms = self.NICHE_KEYWORDS.get(search_key, [search_key])
             
             if search_terms:
                 from django.db.models import Q
@@ -86,8 +105,9 @@ class TrendingVideoListView(generics.ListAPIView):
                 for term in search_terms:
                     # Search in both category field and hashtags field
                     query |= Q(category__icontains=term) | Q(hashtags__icontains=term)
+                
+                # Check if we have any results using these rich keywords
                 filtered = queryset.filter(query)
-                # If niche filter finds nothing, fall back to all trending videos
                 if filtered.exists():
                     queryset = filtered
                 
@@ -120,36 +140,80 @@ class SessionStatusView(APIView):
         # For YouTube/Facebook: check their dedicated generated tables
         if session.platform in ("youtube", "facebook"):
             from django.db import connection
-            table = "youtube_generated" if session.platform == "youtube" else "facebook_generated"
             try:
                 with connection.cursor() as cursor:
-                    cursor.execute(
-                        f"SELECT id, script, title, description, tags, video_url, status "
-                        f"FROM {table} WHERE user_id = %s AND LOWER(niche) = LOWER(%s) ORDER BY id DESC LIMIT 1",
-                        [int(session.creator_id), session.niche]
-                    )
-                    row = cursor.fetchone()
-                    if row:
-                        gen_id, script, title, description, tags, video_url, gen_status = row
-                        payload["script_id"] = str(gen_id)
-                        payload["script_content"] = script
-                        payload["script_status"] = gen_status
-                        if video_url:
-                            payload["video_id"] = str(gen_id)
-                            payload["video_url"] = video_url
-                            payload["video_status"] = gen_status
-                        if gen_status == "pending_review":
-                            payload["status"] = "script_pending"
-                        elif gen_status == "approved":
-                            payload["status"] = "processing"
-                        elif gen_status == "posted":
-                            payload["status"] = "posted"
-                        elif gen_status == "rejected":
-                            payload["status"] = "declined"
-                        else:
-                            payload["status"] = "script_generation"
+                    if session.platform == "facebook":
+                        cursor.execute(
+                            "SELECT id, script_content, script_text, hook, body, cta, "
+                            "hook_text, video_prompt, caption, hashtags, music_vibe, "
+                            "reel_id, video_url, status "
+                            "FROM facebook_generated_videos "
+                            "WHERE user_id = %s ORDER BY id DESC LIMIT 1",
+                            [int(session.creator_id)]
+                        )
+                        row = cursor.fetchone()
+                        if row:
+                            (gen_id, script_content, script_text, hook, body, cta,
+                             hook_text, video_prompt, caption, hashtags, music_vibe,
+                             reel_id, video_url, gen_status) = row
+                            # Use full script_content (hook+body+cta), fallback to script_text
+                            full_script = script_content or script_text or ""
+                            payload["script_id"] = str(gen_id)
+                            payload["script_content"] = full_script
+                            payload["script_status"] = gen_status
+                            payload["hook"] = hook or ""
+                            payload["body"] = body or ""
+                            payload["cta"] = cta or ""
+                            payload["hook_text"] = hook_text or ""
+                            payload["video_prompt"] = video_prompt or ""
+                            payload["caption"] = caption or ""
+                            payload["hashtags"] = hashtags or ""
+                            payload["music_vibe"] = music_vibe or ""
+                            if video_url:
+                                payload["video_id"] = str(gen_id)
+                                payload["video_url"] = video_url
+                                payload["video_status"] = gen_status
+                            # Map facebook_generated_videos.status to session status
+                            if gen_status == "done":
+                                payload["status"] = "video_pending"
+                            elif gen_status == "processing":
+                                payload["status"] = "script_pending"
+                            elif gen_status == "approved":
+                                payload["status"] = "processing"
+                            elif gen_status in ("published", "posted"):
+                                payload["status"] = "posted"
+                            elif gen_status == "rejected":
+                                payload["status"] = "declined"
+                            else:
+                                payload["status"] = "script_generation"
+                    else:  # youtube
+                        cursor.execute(
+                            "SELECT id, script, title, description, tags, video_url, status "
+                            "FROM youtube_generated WHERE user_id = %s AND LOWER(niche) = LOWER(%s) ORDER BY id DESC LIMIT 1",
+                            [int(session.creator_id), session.niche]
+                        )
+                        row = cursor.fetchone()
+                        if row:
+                            gen_id, script, title, description, tags, video_url, gen_status = row
+                            payload["script_id"] = str(gen_id)
+                            payload["script_content"] = script
+                            payload["script_status"] = gen_status
+                            if video_url:
+                                payload["video_id"] = str(gen_id)
+                                payload["video_url"] = video_url
+                                payload["video_status"] = gen_status
+                            if gen_status == "pending_review":
+                                payload["status"] = "script_pending"
+                            elif gen_status == "approved":
+                                payload["status"] = "processing"
+                            elif gen_status == "posted":
+                                payload["status"] = "posted"
+                            elif gen_status == "rejected":
+                                payload["status"] = "declined"
+                            else:
+                                payload["status"] = "script_generation"
             except Exception as e:
-                print(f"Error checking {table}: {e}")
+                print(f"Error checking {session.platform} generated table: {e}")
 
             serializer = CombinedSessionStatusSerializer(data=payload)
             serializer.is_valid(raise_exception=True)
@@ -280,20 +344,23 @@ class TriggerScrapingView(APIView):
     SCRAPE_WEBHOOK_IDS = {
         "tiktok": "8a4b64f3-ac29-4591-a1b7-4c2089f92bb4",
         "instagram": "instagram-scrape",
-        "facebook": os.getenv("N8N_FACEBOOK_SCRAPE_WEBHOOK_PATH", "facebook-scrape"),
+        # Must match the n8n Webhook Trigger node path exactly (path: "scrape")
+        "facebook": os.getenv("N8N_FACEBOOK_SCRAPE_WEBHOOK_PATH", "scrape"),
         "youtube": os.getenv("N8N_YOUTUBE_SCRAPE_WEBHOOK_PATH", "youtube-scrape"),
     }
 
     def post(self, request):
         niche = request.data.get("niche", "")
         platform = request.data.get("platform", "tiktok").lower()
-        payload = {"niche": niche, "platform": platform} if niche else {"platform": platform}
+        # Always include niche so n8n Build Scrape Config can filter pages
+        payload = {"niche": niche or "general", "platform": platform}
 
         webhook_id = self.SCRAPE_WEBHOOK_IDS.get(platform, self.SCRAPE_WEBHOOK_IDS["tiktok"])
         success = trigger_n8n_webhook(webhook_id, payload, timeout=180)
 
         if not success:
             return Response({"error": "Failed to trigger n8n scraping workflow"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 
         return Response({"success": True, "message": f"{platform.title()} scraping workflow triggered successfully."})
 
@@ -346,12 +413,13 @@ class ApproveScriptView(APIView):
         return Response({"success": True})
 
 class ApproveVideoView(APIView):
-    """POST /api/n8n/approve/video/ - Supports both TikTok and Instagram"""
+    """POST /api/n8n/approve/video/ - Supports TikTok, Instagram, and Facebook"""
     permission_classes = [IsAuthenticated]
 
     VIDEO_APPROVE_WEBHOOK_ID = os.getenv("N8N_VIDEO_APPROVE_WEBHOOK_ID", "35bda5a4-5875-4ce6-b33f-3bea2ca0cc8a")
     VIDEO_APPROVE_WEBHOOK_PATH = os.getenv("N8N_VIDEO_APPROVE_WEBHOOK_PATH", "tiktok-video-approve")
     INSTAGRAM_VIDEO_APPROVE_PATH = "instagram-video-approve"
+    FACEBOOK_VIDEO_APPROVE_PATH = os.getenv("N8N_FACEBOOK_VIDEO_APPROVE_PATH", "facebook-video-approve")
 
     def post(self, request):
         session_id = request.data.get("session_id")
@@ -359,7 +427,7 @@ class ApproveVideoView(APIView):
         approved = request.data.get("approved", False)
         decision = "approve" if approved else "decline"
         platform = request.data.get("platform", "tiktok").lower()
-        
+
         payload = {
             "sessionId": session_id,
             "videoId": video_id,
@@ -368,7 +436,12 @@ class ApproveVideoView(APIView):
             "feedback": request.data.get("feedback", ""),
         }
 
-        if platform == "instagram":
+        if platform == "facebook":
+            from .models import FacebookGeneratedVideo
+            fb_video = FacebookGeneratedVideo.objects.filter(id=video_id).first()
+            payload["videoUrl"] = fb_video.video_url if fb_video else ""
+            success = trigger_n8n_webhook(self.FACEBOOK_VIDEO_APPROVE_PATH, payload)
+        elif platform == "instagram":
             success = trigger_n8n_webhook(self.INSTAGRAM_VIDEO_APPROVE_PATH, payload)
         else:
             # TikTok path: include access token
@@ -382,7 +455,7 @@ class ApproveVideoView(APIView):
                 payload,
                 fallback_ids=[self.VIDEO_APPROVE_WEBHOOK_PATH],
             )
-        
+
         if not success:
             return Response({"error": "Failed proxying to n8n"}, status=400)
 
@@ -913,7 +986,143 @@ _NICHE_HOOKS = {
 }
 
 
+class FacebookReelsListView(APIView):
+    """
+    GET /api/n8n/facebook_reels/
+    Returns niche-filtered Facebook reels scraped by n8n for the
+    "Pick a Trend" screen. Mirrors TrendingVideoListView for TikTok.
+
+    Query params:
+      ?niche=cuisine   — filter by niche (required for best results)
+      ?limit=20        — max results (default 20)
+    """
+    permission_classes = [IsAuthenticated]
+
+    NICHE_KEYWORDS = {
+        'entertainment': ['entertainment', 'funny', 'comedy', 'viral', 'fun', 'meme', 'prank', 'challenge', 'skit'],
+        'education': ['education', 'learn', 'tutorial', 'howto', 'tips', 'facts', 'science', 'history', 'study'],
+        'business': ['business', 'entrepreneur', 'startup', 'marketing', 'sales', 'ceo', 'hustle', 'success'],
+        'finance': ['finance', 'money', 'investing', 'stocks', 'crypto', 'budget', 'wealth', 'financial', 'income'],
+        'fitness': ['fitness', 'workout', 'gym', 'health', 'exercise', 'diet', 'nutrition', 'training', 'muscle'],
+        'motivation': ['motivation', 'mindset', 'inspire', 'success', 'goals', 'growth', 'positivity', 'mindfulness'],
+        'gaming': ['gaming', 'gamer', 'game', 'gameplay', 'esports', 'twitch', 'ps5', 'xbox', 'minecraft', 'fortnite'],
+        'art': ['art', 'design', 'drawing', 'painting', 'creative', 'artist', 'illustration', 'sketch', 'digital'],
+        'fashion': ['fashion', 'style', 'outfit', 'ootd', 'clothing', 'beauty', 'makeup', 'skincare', 'aesthetic'],
+        'cooking': ['cooking', 'food', 'recipe', 'chef', 'baking', 'meal', 'kitchen', 'eat', 'delicious'],
+        'travel': ['travel', 'adventure', 'explore', 'trip', 'vacation', 'wanderlust', 'destination', 'vlog'],
+        'tech': ['tech', 'technology', 'coding', 'programming', 'ai', 'software', 'developer', 'gadget', 'review'],
+        'podcast': ['podcast', 'interview', 'talk', 'discussion', 'story', 'storytelling', 'narration'],
+        'news': ['news', 'politics', 'world', 'breaking', 'update', 'current', 'economy', 'report'],
+        'storytelling': ['story', 'storytime', 'narrative', 'tale', 'vlog', 'experience', 'life', 'pov'],
+    }
+
+    # Maps each niche to the Facebook page slugs configured in the N8N scraper.
+    # Filtering by page_url is language-agnostic — works even for Arabic/French content.
+    PAGE_NICHE_MAP = {
+        'entertainment': ['9GAG', 'LADbible', 'unilad', 'ViralHog', 'CapitaleFM', 'ShemsFM'],
+        'education':     ['TEDtalks', 'NatGeo', 'ScienceAlert', 'brainfoodofficial'],
+        'business':      ['EntrepreneurMagazine', 'Inc', 'garyvee', 'Forbes'],
+        'finance':       ['bloomberg', 'cnbc', 'TheMotleyFool', 'investopedia'],
+        'fitness':       ['NikeTrainingClub', 'MensHealthMagazine', 'muscleandfitness', 'bodybuilding'],
+        'motivation':    ['TonyRobbins', 'Goalcast', 'JayShettyPage', 'BeInspiredChannel'],
+        'gaming':        ['IGN', 'GameSpot', 'PlayStation', 'Xbox'],
+        'art':           ['Behance', 'adobe', 'BoredPanda'],
+        'fashion':       ['vogue', 'HM', 'ZARA', 'NordstromRack'],
+        'cooking':       ['buzzfeedtasty', 'FoodNetwork', 'Tastemade', 'bonappetitmag'],
+        'travel':        ['lonelyplanet', 'NatGeoTravel', 'TravelChannel', 'beautifuldestinations'],
+        'tech':          ['TechCrunch', 'TheVerge', 'wired', 'engadget'],
+        'podcast':       ['TimFerriss', 'HubermanLab', 'lexfridman'],
+        'news':          ['BBCNews', 'CNN', 'reuters', 'AlJazeera', 'TunisieNumerique', 'mosaiquefm', 'BusinessNewsTN'],
+        'storytelling':  ['HumansOfNewYork', 'storycorps', 'AmazingStories'],
+    }
+
+    def get(self, request):
+        niche = request.query_params.get("niche", "").strip().lower()
+        limit = min(int(request.query_params.get("limit", 20)), 50)
+
+        _SELECT = """
+            SELECT id, reel_id, reel_url, page_url, text, play_count,
+                   duration_ms, niche, thumbnail_url, created_at, status
+            FROM facebook_reels
+        """
+        columns: list = []
+        rows: list = []
+
+        try:
+            with connection.cursor() as cursor:
+                if niche and niche != "general":
+                    page_slugs = self.PAGE_NICHE_MAP.get(niche, [])
+                    keywords   = self.NICHE_KEYWORDS.get(niche, [niche])
+
+                    # Build page_url conditions (language-agnostic: filter by
+                    # which Facebook page the reel came from).
+                    page_conditions  = " OR ".join(["page_url ILIKE %s"] * len(page_slugs))
+                    page_params      = [f"%/{slug}%" for slug in page_slugs]
+
+                    # Secondary: text keyword matching for pages not in our map.
+                    text_conditions  = " OR ".join(["text ILIKE %s"] * len(keywords))
+                    text_params      = [f"%{k}%" for k in keywords]
+
+                    if page_slugs:
+                        where = f"({page_conditions}) OR ({text_conditions})"
+                        params = page_params + text_params
+                    else:
+                        where = text_conditions
+                        params = text_params
+
+                    cursor.execute(
+                        f"{_SELECT} WHERE {where} "
+                        f"ORDER BY play_count DESC, created_at DESC LIMIT %s",
+                        params + [limit],
+                    )
+                    columns = [c[0] for c in cursor.description]
+                    rows = cursor.fetchall()
+
+                    # Fallback: if nothing matched, return all reels so the
+                    # screen is never empty while the DB is still being seeded.
+                    if not rows:
+                        cursor.execute(
+                            f"{_SELECT} ORDER BY play_count DESC, created_at DESC LIMIT %s",
+                            [limit],
+                        )
+                        columns = [c[0] for c in cursor.description]
+                        rows = cursor.fetchall()
+                else:
+                    cursor.execute(
+                        f"{_SELECT} ORDER BY play_count DESC, created_at DESC LIMIT %s",
+                        [limit],
+                    )
+                    columns = [c[0] for c in cursor.description]
+                    rows = cursor.fetchall()
+
+        except Exception as e:
+            return Response(
+                {"error": f"Failed to fetch Facebook reels: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        reels = []
+        for row in rows:
+            r = dict(zip(columns, row))
+            reels.append({
+                "id":            r.get("id"),
+                "reel_id":       r.get("reel_id", ""),
+                "reel_url":      r.get("reel_url", ""),
+                "page_url":      r.get("page_url", ""),
+                "text":          r.get("text", ""),
+                "play_count":    r.get("play_count", 0),
+                "duration_ms":   r.get("duration_ms", 0),
+                "niche":         r.get("niche", ""),
+                "thumbnail_url": r.get("thumbnail_url", ""),
+                "created_at":    r["created_at"].isoformat() if r.get("created_at") else None,
+                "status":        r.get("status", "scraped"),
+            })
+
+        return Response(reels)
+
+
 class RecommendationsView(APIView):
+
     """
     GET /api/n8n/recommendations/
 

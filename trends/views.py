@@ -19,13 +19,44 @@ class TrendListView(generics.ListAPIView):
     serializer_class = TrendSerializer
     permission_classes = [IsAuthenticated]
 
+    NICHE_KEYWORDS = {
+        'entertainment': ['entertainment', 'funny', 'comedy', 'viral', 'fun', 'meme', 'prank', 'challenge', 'skit'],
+        'education': ['education', 'learn', 'tutorial', 'howto', 'tips', 'facts', 'science', 'history', 'study'],
+        'business': ['business', 'entrepreneur', 'startup', 'marketing', 'sales', 'ceo', 'hustle', 'success'],
+        'finance': ['finance', 'money', 'investing', 'stocks', 'crypto', 'budget', 'wealth', 'financial', 'income'],
+        'fitness': ['fitness', 'workout', 'gym', 'health', 'exercise', 'diet', 'nutrition', 'training', 'muscle'],
+        'motivation': ['motivation', 'mindset', 'inspire', 'success', 'goals', 'growth', 'positivity', 'mindfulness'],
+        'gaming': ['gaming', 'gamer', 'game', 'gameplay', 'esports', 'twitch', 'ps5', 'xbox', 'minecraft', 'fortnite'],
+        'art': ['art', 'design', 'drawing', 'painting', 'creative', 'artist', 'illustration', 'sketch', 'digital'],
+        'fashion': ['fashion', 'style', 'outfit', 'ootd', 'clothing', 'beauty', 'makeup', 'skincare', 'aesthetic'],
+        'cooking': ['cooking', 'food', 'recipe', 'chef', 'baking', 'meal', 'kitchen', 'eat', 'delicious'],
+        'travel': ['travel', 'adventure', 'explore', 'trip', 'vacation', 'wanderlust', 'destination', 'vlog'],
+        'tech': ['tech', 'technology', 'coding', 'programming', 'ai', 'software', 'developer', 'gadget', 'review'],
+        'podcast': ['podcast', 'interview', 'talk', 'discussion', 'story', 'storytelling', 'narration'],
+        'news': ['news', 'politics', 'world', 'breaking', 'update', 'current', 'economy', 'report'],
+        'storytelling': ['story', 'storytime', 'narrative', 'tale', 'vlog', 'experience', 'life', 'pov'],
+    }
+
     def get_queryset(self):
         qs = Trend.objects.all()
         platform = self.request.query_params.get("platform")
         sort = self.request.query_params.get("sort", "growth")
+        niche = self.request.query_params.get("niche")
 
         if platform:
             qs = qs.filter(platform=platform)
+
+        if niche and niche != "general":
+            niche_key = niche.lower().strip()
+            keywords = self.NICHE_KEYWORDS.get(niche_key, [niche_key])
+            if keywords:
+                from django.db.models import Q
+                query = Q()
+                for kw in keywords:
+                    query |= Q(hashtag__icontains=kw) | Q(target_audience__icontains=kw)
+                filtered = qs.filter(query)
+                if filtered.exists():
+                    qs = filtered
 
         if sort == "views":
             qs = qs.order_by("-total_views")
@@ -143,8 +174,17 @@ class YouTubeVideoListView(generics.ListAPIView):
         try:
             qs = YouTubeVideo.objects.all()
             niche = self.request.query_params.get("niche")
-            if niche:
-                qs = qs.filter(niche__icontains=niche)
+            if niche and niche != "general":
+                niche_key = niche.lower().strip()
+                # Use NICHE_KEYWORDS from TrendListView if available, else fallback to just the niche string
+                keywords = TrendListView.NICHE_KEYWORDS.get(niche_key, [niche_key])
+                if keywords:
+                    from django.db.models import Q
+                    query = Q()
+                    # It's managed False, but ORM filters still translate to ILIKE queries properly
+                    for kw in keywords:
+                        query |= Q(tags__icontains=kw) | Q(description__icontains=kw) | Q(titre__icontains=kw) | Q(niche__icontains=niche_key)
+                    qs = qs.filter(query)
             return qs.order_by("-vues")[:20]
         except (ProgrammingError, OperationalError):
             # Table doesn't exist yet (N8N hasn't run the first scrape)

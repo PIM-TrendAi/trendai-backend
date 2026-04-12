@@ -1,9 +1,12 @@
 """
 Platforms views — connect/disconnect social media platforms.
 """
+import os
 from datetime import timedelta
+from urllib.parse import urlencode
 
 import httpx
+from django.http import HttpResponse
 from rest_framework import generics, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -245,22 +248,134 @@ class InstagramStatusView(APIView):
 
 
 
-# ── Facebook Connect/Disconnect/Status ────────────────────────────────
+# ── Facebook OAuth + Connect/Disconnect/Status ────────────────────────
 
-FB_ACCESS_TOKEN = os.getenv("FACEBOOK_ACCESS_TOKEN", "")
-FB_PAGE_ID = os.getenv("FACEBOOK_PAGE_ID", "")
+FB_APP_ID       = os.getenv("FACEBOOK_APP_ID", "")
+FB_APP_SECRET   = os.getenv("FACEBOOK_APP_SECRET", "")
+FB_REDIRECT_URI = os.getenv("FACEBOOK_REDIRECT_URI", "")   # e.g. https://xxx.ngrok.io/api/platforms/facebook/oauth/callback/
+FB_GRAPH_BASE   = "https://graph.facebook.com/v21.0"
+
+
+class FacebookOAuthStartView(APIView):
+    """GET /api/platforms/facebook/oauth/start/ — Return Facebook Login OAuth URL."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if not FB_APP_ID or not FB_REDIRECT_URI:
+            return Response(
+                {"error": "Facebook app not configured on server. Set FACEBOOK_APP_ID and FACEBOOK_REDIRECT_URI."},
+                status=500,
+            )
+        params = {
+            "client_id": FB_APP_ID,
+            "redirect_uri": FB_REDIRECT_URI,
+            "scope": "pages_show_list,pages_read_engagement,read_insights",
+            "state": str(request.user.pk),
+            "response_type": "code",
+        }
+        auth_url = f"https://www.facebook.com/dialog/oauth?{urlencode(params)}"
+        return Response({"auth_url": auth_url})
+
+
+class FacebookOAuthCallbackView(APIView):
+    """GET /api/platforms/facebook/oauth/callback/ — Handle Facebook redirect after Login."""
+    permission_classes = []  # Called by Facebook browser redirect — no JWT
+
+    def get(self, request):
+        error = request.query_params.get("error")
+        code  = request.query_params.get("code")
+        state = request.query_params.get("state")
+
+        def _html(title, body, color="#ff4444"):
+            return HttpResponse(
+                f"""<html><body style="font-family:sans-serif;text-align:center;
+                padding-top:80px;background:#0f111e;color:white;">
+                <h2 style="color:{color};">{title}</h2><p>{body}</p>
+                <script>setTimeout(()=>window.close(),3000);</script>
+                </body></html>""",
+                content_type="text/html",
+            )
+
+        if error:
+            return _html("Authorization Cancelled", f"Facebook said: {error}")
+        if not code or not state:
+            return _html("Invalid Callback", "Missing code or state parameter.")
+
+        # Resolve user from state (user pk)
+        User = get_user_model()
+        try:
+            user = User.objects.get(pk=int(state))
+        except (User.DoesNotExist, ValueError):
+            return _html("Invalid State", "Could not identify user.")
+
+        # Exchange code → short-lived user token
+        try:
+            r = httpx.get(f"{FB_GRAPH_BASE}/oauth/access_token", params={
+                "client_id": FB_APP_ID,
+                "client_secret": FB_APP_SECRET,
+                "redirect_uri": FB_REDIRECT_URI,
+                "code": code,
+            }, timeout=10)
+            user_token = r.json().get("access_token")
+            if not user_token:
+                raise ValueError(r.text)
+        except Exception as e:
+            return _html("Token Exchange Failed", str(e))
+
+        # Exchange short-lived → long-lived user token
+        try:
+            r2 = httpx.get(f"{FB_GRAPH_BASE}/oauth/access_token", params={
+                "grant_type": "fb_exchange_token",
+                "client_id": FB_APP_ID,
+                "client_secret": FB_APP_SECRET,
+                "fb_exchange_token": user_token,
+            }, timeout=10)
+            long_token = r2.json().get("access_token", user_token)
+        except Exception:
+            long_token = user_token
+
+        # Get user's pages and use the first page's access token
+        page_token = long_token
+        try:
+            r3 = httpx.get(f"{FB_GRAPH_BASE}/me/accounts", params={
+                "access_token": long_token,
+                "fields": "id,name,access_token",
+            }, timeout=10)
+            pages = r3.json().get("data", [])
+            if pages:
+                page_token = pages[0]["access_token"]
+        except Exception:
+            pass
+
+        # Save token
+        platform, _ = UserPlatform.objects.get_or_create(user=user, platform_name="Facebook")
+        platform.access_token = page_token
+        platform.connected    = True
+        platform.connected_at = timezone.now()
+        platform.save()
+
+        return _html(
+            "Facebook Connected!",
+            "You can close this tab and return to the app.",
+            color="#1877F2",
+        )
 
 
 class FacebookConnectView(APIView):
-    """POST /api/platforms/facebook/connect/ — Store the FB token and mark connected."""
+    """POST /api/platforms/facebook/connect/ — kept for internal/manual use only."""
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        platform, _ = UserPlatform.objects.get_or_create(
-            user=request.user, platform_name="Facebook"
-        )
-        platform.access_token = request.data.get("access_token", FB_ACCESS_TOKEN)
-        platform.connected = True
+        # Only allow if an explicit token is provided (not empty env var shortcut)
+        token = request.data.get("access_token", "").strip()
+        if not token:
+            return Response(
+                {"error": "Use GET /api/platforms/facebook/oauth/start/ to connect via Facebook Login."},
+                status=400,
+            )
+        platform, _ = UserPlatform.objects.get_or_create(user=request.user, platform_name="Facebook")
+        platform.access_token = token
+        platform.connected    = True
         platform.connected_at = timezone.now()
         platform.save()
         return Response({"status": "connected"})
