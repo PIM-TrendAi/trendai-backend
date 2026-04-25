@@ -192,7 +192,7 @@ class StartWorkflowView(APIView):
     TIKTOK_START_WEBHOOK_ID = os.getenv("N8N_START_WEBHOOK_ID", "205b7271-5246-4e81-80b4-7b93579ab006")
     TIKTOK_START_WEBHOOK_PATH = os.getenv("N8N_START_WEBHOOK_PATH", "tiktok-creator-select")
     INSTAGRAM_START_WEBHOOK_PATH = "instagram-start"
-    FACEBOOK_START_WEBHOOK_PATH = os.getenv("N8N_FACEBOOK_START_WEBHOOK_PATH", "facebook-start")
+    FACEBOOK_START_WEBHOOK_PATH = os.getenv("N8N_FACEBOOK_START_WEBHOOK_PATH", "generate")  # Facebook workflow path
     YOUTUBE_START_WEBHOOK_PATH = os.getenv("N8N_YOUTUBE_START_WEBHOOK_PATH", "generate-video-v2")
 
     def post(self, request):
@@ -280,7 +280,7 @@ class TriggerScrapingView(APIView):
     SCRAPE_WEBHOOK_IDS = {
         "tiktok": "8a4b64f3-ac29-4591-a1b7-4c2089f92bb4",
         "instagram": "instagram-scrape",
-        "facebook": os.getenv("N8N_FACEBOOK_SCRAPE_WEBHOOK_PATH", "facebook-scrape"),
+        "facebook": os.getenv("N8N_FACEBOOK_SCRAPE_WEBHOOK_PATH", "scrape"),  # Facebook workflow scrape path
         "youtube": os.getenv("N8N_YOUTUBE_SCRAPE_WEBHOOK_PATH", "youtube-scrape"),
     }
 
@@ -370,6 +370,14 @@ class ApproveVideoView(APIView):
 
         if platform == "instagram":
             success = trigger_n8n_webhook(self.INSTAGRAM_VIDEO_APPROVE_PATH, payload)
+        elif platform == "facebook":
+            # Facebook workflow: trigger dedicated approve webhook
+            fb_approve_path = os.getenv("N8N_FACEBOOK_VIDEO_APPROVE_PATH", "facebook-video-approve")
+            success = trigger_n8n_webhook(fb_approve_path, payload)
+        elif platform == "youtube":
+            # YouTube workflow: trigger dedicated approve webhook
+            yt_approve_path = os.getenv("N8N_YOUTUBE_VIDEO_APPROVE_PATH", "youtube-video-approve")
+            success = trigger_n8n_webhook(yt_approve_path, payload)
         else:
             # TikTok path: include access token
             token = ""
@@ -382,7 +390,7 @@ class ApproveVideoView(APIView):
                 payload,
                 fallback_ids=[self.VIDEO_APPROVE_WEBHOOK_PATH],
             )
-        
+
         if not success:
             return Response({"error": "Failed proxying to n8n"}, status=400)
 
@@ -877,3 +885,137 @@ class MixVideoView(APIView):
             return Response({"error": f"Video mixing failed: {str(e)}"}, status=500)
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+# ──────────────────────────────────────────────────────────────
+# Niche-aware fallback recommendations (used when no API key)
+# ──────────────────────────────────────────────────────────────
+_NICHE_BEST_TIMES = {
+    'fitness':       '7:00 AM',
+    'food':          '12:00 PM',
+    'finance':       '8:00 AM',
+    'tech':          '9:00 AM',
+    'gaming':        '8:00 PM',
+    'beauty':        '6:00 PM',
+    'fashion':       '5:00 PM',
+    'comedy':        '7:00 PM',
+    'education':     '10:00 AM',
+    'motivation':    '6:00 AM',
+    'travel':        '3:00 PM',
+    'music':         '9:00 PM',
+}
+
+_NICHE_HOOKS = {
+    'fitness':    "Most people quit in week 2. Here's how to make it stick...",
+    'food':       "This recipe took me 10 minutes and everyone thinks I'm a chef...",
+    'finance':    "I saved ${amount} in 30 days using this one rule...",
+    'tech':       "This tool just saved me 3 hours of work. You need it.",
+    'gaming':     "Nobody talks about this strategy. Until now.",
+    'beauty':     "Dermatologists don't want you to know this $5 dupe...",
+    'fashion':    "Dress for less — here's how I build outfits under $50.",
+    'comedy':     "POV: you did this and immediately regretted it.",
+    'education':  "They never taught us this in school. Surprisingly useful.",
+    'motivation': "Stop waiting for motivation — here's what actually works.",
+    'travel':     "I found this hidden spot so you don't have to.",
+    'music':      "This song went from 0 to viral in 48 hours. Here's why.",
+}
+
+
+class RecommendationsView(APIView):
+    """
+    GET /api/n8n/recommendations/
+
+    Returns 3 AI-personalised content recommendations based on the
+    user's saved niches and the latest trending videos in those niches.
+
+    Uses Claude Haiku when ANTHROPIC_API_KEY is set.
+    Falls back to smart rule-based recommendations otherwise.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        niches = list(user.categories) if user.categories else ['tech']
+
+        # ── 1. Fetch top trending videos (used as inspiration) ────────────
+        trending = list(TrendingVideo.objects.order_by('rank')[:15])
+
+        # ── 2. Try Ollama (local, free) ──────────────────────────────────
+        if trending:
+            try:
+                recs = self._ollama_recommendations(niches, trending)
+                if recs:
+                    return Response(recs)
+            except Exception as e:
+                print(f"[recommendations] Ollama failed: {e}")
+
+        # ── 3. Rule-based fallback ───────────────────────────────────────
+        return Response(self._rule_based(niches, trending))
+
+    # ------------------------------------------------------------------ #
+    def _ollama_recommendations(self, niches, trending):
+        import json
+
+        model = os.getenv('OLLAMA_MODEL', 'llama3.2:1b')
+        ollama_url = os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434')
+
+        # Use top 5 videos as inspiration (keep prompt short for small model)
+        video_ids = [v.video_id for v in trending[:5]]
+        niche_str = ', '.join(niches)
+
+        prompt = (
+            f'Give 3 social media video ideas for a creator in: {niche_str}.\n'
+            f'Use these video IDs as inspiration (pick one per idea): {", ".join(video_ids[:3])}.\n'
+            f'Reply ONLY with a JSON array. Each item: {{"title":"...","hook":"...","best_time":"7:00 PM","niche":"{niches[0]}","platform":"tiktok","video_id":"...","angle":"..."}}\n'
+            f'No explanation. No markdown. JSON only.'
+        )
+
+        resp = requests.post(
+            f"{ollama_url}/api/generate",
+            json={"model": model, "prompt": prompt, "stream": False},
+            timeout=90,
+        )
+        resp.raise_for_status()
+        text = resp.json().get("response", "").strip()
+        # Strip markdown code fences if present
+        if '```' in text:
+            text = text.split('```')[1]
+            if text.startswith('json'):
+                text = text[4:]
+        # Extract JSON array
+        start = text.find('[')
+        end = text.rfind(']') + 1
+        if start == -1 or end == 0:
+            return None
+        return json.loads(text[start:end])
+
+    # ------------------------------------------------------------------ #
+    def _rule_based(self, niches, trending):
+        """Build 3 varied niche-specific recommendations."""
+        _TITLES = [
+            ("Top {niche} Tips Nobody Talks About",   "Beginner-friendly {niche} advice that actually works."),
+            ("My {niche} Take on This Viral Trend",   "Put a {niche} spin on what's already trending."),
+            ("What I Wish I Knew About {niche} Earlier", "Personal story + {niche} lesson = high retention."),
+        ]
+        _PLATFORMS = ['tiktok', 'instagram', 'youtube']
+
+        recs = []
+        niche_cycle = (niches * 3)[:3]
+
+        for i, niche in enumerate(niche_cycle):
+            video = trending[i] if i < len(trending) else None
+            best_time = _NICHE_BEST_TIMES.get(niche, '6:00 PM')
+            hook = _NICHE_HOOKS.get(niche, f"Here's what no one tells you about {niche}...")
+            title_tmpl, angle_tmpl = _TITLES[i]
+
+            recs.append({
+                'title': title_tmpl.format(niche=niche.title()),
+                'hook': hook,
+                'best_time': best_time,
+                'niche': niche,
+                'platform': _PLATFORMS[i],
+                'video_id': video.video_id if video else '',
+                'angle': angle_tmpl.format(niche=niche),
+            })
+
+        return recs
