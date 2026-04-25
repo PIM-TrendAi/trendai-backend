@@ -11,8 +11,8 @@ from rest_framework import generics, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
-from .models import TrendingVideo, CreatorSession, GeneratedScript, GeneratedVideo, PostedVideo, ConnectedPlatform
-from .serializers import TrendingVideoSerializer, CombinedSessionStatusSerializer
+from .models import TrendingVideo, CreatorSession, GeneratedScript, GeneratedVideo, PostedVideo, ConnectedPlatform, WorkflowRun, InstagramReel
+from .serializers import TrendingVideoSerializer, CombinedSessionStatusSerializer, InstagramReelSerializer
 
 def trigger_n8n_webhook(webhook_id: str, payload: dict, fallback_ids=None, timeout=30):
     base_url = os.getenv("N8N_WEBHOOK_BASE_URL", "").rstrip("/")
@@ -71,28 +71,73 @@ class TrendingVideoListView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        # Get base queryset ordered by rank
-        queryset = TrendingVideo.objects.order_by('rank')
+        platform = self.request.query_params.get('platform')
+        niche_param = self.request.query_params.get('niche', '')
         
-        # Apply niche filtering if provided
-        niche = self.request.query_params.get('niche')
-        if niche:
-            # Clean up the niche string for search (e.g., 'Tech & Gadgets' -> ['tech', 'gadgets'])
-            search_terms = [t.strip().lower() for t in niche.replace('&', ' ').split() if len(t.strip()) > 2]
+        # Split niches by comma if multiple are provided
+        niches = [n.strip() for n in niche_param.split(',') if n.strip()]
+
+        from django.db.models import Q, Max
+        query = Q()
+        
+        if niches:
+            for n in niches:
+                # For each niche, find the LATEST run_id that actually has records
+                max_id = TrendingVideo.objects.filter(category__icontains=n).aggregate(Max('run_id'))['run_id__max']
+                if max_id:
+                    # Only show videos from THAT specific latest scan for THIS niche
+                    query |= Q(category__icontains=n, run_id=max_id)
             
-            if search_terms:
+            if not query:
+                return TrendingVideo.objects.none()
+            
+            queryset = TrendingVideo.objects.filter(query)
+        else:
+            # If no niche specified, just show the 20 absolute latest
+            queryset = TrendingVideo.objects.order_by('-scraped_at', 'rank')
+
+        return queryset.order_by('rank')[:20]
+
+
+class InstagramReelListView(generics.ListAPIView):
+    """GET /api/n8n/instagram-reels/ — List scraped Instagram Reels with optional niche filter.
+
+    Query params:
+        ?niche=fitness       — filter by single niche
+        ?niche=fitness,tech  — filter by multiple niches (comma-separated)
+        (none)               — return all reels, newest first
+    """
+    serializer_class = InstagramReelSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        from django.db import connection
+        try:
+            # Safety check: does the table exist?
+            if 'instagram_reels' not in connection.introspection.table_names():
+                # Allow manual override for cases where introspection fails
+                pass 
+
+            qs = InstagramReel.objects.all()
+            niche_param = self.request.query_params.get('niche', '').strip()
+            
+            if niche_param:
                 from django.db.models import Q
+                # Support multiple niches (comma separated)
+                niches = [n.strip().lower() for n in niche_param.split(',') if n.strip()]
                 query = Q()
-                for term in search_terms:
-                    # Search in both category field and hashtags field
-                    query |= Q(category__icontains=term) | Q(hashtags__icontains=term)
-                filtered = queryset.filter(query)
-                # If niche filter finds nothing, fall back to all trending videos
-                if filtered.exists():
-                    queryset = filtered
-                
-        # Return top 10 matches
-        return queryset[:10]
+                for n in niches:
+                    # Case-insensitive "contains" search
+                    query |= Q(niche__icontains=n)
+                qs = qs.filter(query)
+            
+            # Order by absolute latest first
+            return qs.order_by('-scraped_at', '-views')[:50]
+        except Exception as e:
+            print(f"InstagramReelListView error: {e}")
+            # Fallback to simple unfiltered list if niche logic fails
+            return InstagramReel.objects.order_by('-scraped_at')[:30]
+
 
 class SessionStatusView(APIView):
     """GET /api/n8n/sessions/{session_id}/ - Aggregates the session status across multiple tables"""
@@ -191,9 +236,49 @@ class StartWorkflowView(APIView):
 
     TIKTOK_START_WEBHOOK_ID = os.getenv("N8N_START_WEBHOOK_ID", "205b7271-5246-4e81-80b4-7b93579ab006")
     TIKTOK_START_WEBHOOK_PATH = os.getenv("N8N_START_WEBHOOK_PATH", "tiktok-creator-select")
-    INSTAGRAM_START_WEBHOOK_PATH = "instagram-start"
+    INSTAGRAM_START_WEBHOOK_PATH = "instagram-start-v2"
     FACEBOOK_START_WEBHOOK_PATH = os.getenv("N8N_FACEBOOK_START_WEBHOOK_PATH", "generate")  # Facebook workflow path
     YOUTUBE_START_WEBHOOK_PATH = os.getenv("N8N_YOUTUBE_START_WEBHOOK_PATH", "generate-video-v2")
+
+    # ── TikTok algo-engineered prompt ─────────────────────────────────────────
+    @staticmethod
+    def _build_tiktok_algo_prompt(niche: str, style: str, duration: str, creator_angle: str = "") -> str:
+        """
+        Builds a structured prompt that forces Ollama to produce a TikTok script
+        engineered around the platform's key algorithmic signals:
+          - Watch-time / completion rate  → punchy body, no filler
+          - Engagement velocity           → CTA that triggers comments/saves
+          - Seamless loop                 → loop ending echoes the hook
+          - First-3-second hook           → labelled [HOOK] section
+          - Hashtag strategy              → 1 mega + 2 niche + 1 micro + 1 trending
+        """
+        angle_line = f"\nCreator's specific angle: {creator_angle}\n" if creator_angle.strip() else ""
+        return (
+            f"You are an expert TikTok growth strategist and viral scriptwriter.\n"
+            f"{angle_line}"
+            f"Write an algorithm-optimised TikTok script for the '{niche}' niche.\n"
+            f"Style: {style}. Target spoken duration: {duration}.\n\n"
+            f"Output the script using EXACTLY these section labels on their own lines:\n\n"
+            f"[HOOK]\n"
+            f"1-2 sentences (max 20 words). Pattern interrupt — start with a question, "
+            f"bold claim, 'POV:', 'Stop scrolling if...', or a surprising stat. "
+            f"This must make the viewer freeze in the first 3 seconds.\n\n"
+            f"[BODY]\n"
+            f"The core value (15-45 s). Use storytelling, a surprising reveal, a quick tutorial, "
+            f"or an emotional pull. Every sentence must earn the next. No filler.\n\n"
+            f"[CTA]\n"
+            f"One sentence that forces engagement: comment bait, save bait, or tag bait. "
+            f"Example: 'Comment your answer below 👇', 'Save this before it's gone', "
+            f"'Tag someone who needs to hear this'.\n\n"
+            f"[LOOP]\n"
+            f"One closing sentence that echoes the opening hook word-for-word or thematically, "
+            f"so the video loops seamlessly and TikTok counts the replay as a re-watch.\n\n"
+            f"[HASHTAGS]\n"
+            f"Exactly 5 hashtags: 1 mega-reach (#fyp or #viral), 2 niche-specific, "
+            f"1 micro-niche, 1 trending challenge or sound tag.\n\n"
+            f"Rules: output ONLY the labelled script. No extra commentary, no markdown, "
+            f"no explanations outside the sections."
+        )
 
     def post(self, request):
         try:
@@ -204,21 +289,31 @@ class StartWorkflowView(APIView):
             if not niche or not selected_video_id:
                 return Response({"error": "niche and selected_video_id are required"}, status=status.HTTP_400_BAD_REQUEST)
 
+            style = request.data.get("style", "Informative")
+            duration = request.data.get("duration", "60s")
+            creator_angle = request.data.get("custom_prompt", "")
+
+            # For TikTok: replace the generic prompt with a full algo-engineered prompt
+            if platform == "tiktok":
+                user_prompt = self._build_tiktok_algo_prompt(niche, style, duration, creator_angle)
+            else:
+                user_prompt = creator_angle
+
             payload = {
                 "niche": niche,
                 "selectedVideoId": selected_video_id,
                 "creatorId": str(request.user.id),
-                "userPrompt": request.data.get("custom_prompt", ""),
-                "style": request.data.get("style", "Informative"),
-                "duration": request.data.get("duration", "60s"),
+                "userPrompt": user_prompt,
+                "style": style,
+                "duration": duration,
                 "video_id": selected_video_id,
                 "reel_id": selected_video_id,
                 "creator_id": str(request.user.id),
                 "user_id": str(request.user.id),
                 "user_email": request.user.email,
                 "title": request.data.get("title", ""),
-                "custom_prompt": request.data.get("custom_prompt", ""),
-                "prompt": request.data.get("custom_prompt", ""),
+                "custom_prompt": user_prompt,
+                "prompt": user_prompt,
             }
 
             if platform == "instagram":
@@ -279,23 +374,37 @@ class TriggerScrapingView(APIView):
     # Webhook IDs by platform
     SCRAPE_WEBHOOK_IDS = {
         "tiktok": "8a4b64f3-ac29-4591-a1b7-4c2089f92bb4",
-        "instagram": "instagram-scrape",
+        "instagram": "instagram-scrape-v2",
         "facebook": os.getenv("N8N_FACEBOOK_SCRAPE_WEBHOOK_PATH", "scrape"),  # Facebook workflow scrape path
         "youtube": os.getenv("N8N_YOUTUBE_SCRAPE_WEBHOOK_PATH", "youtube-scrape"),
     }
 
     def post(self, request):
-        niche = request.data.get("niche", "")
+        niche_param = request.data.get("niche", "")
         platform = request.data.get("platform", "tiktok").lower()
-        payload = {"niche": niche, "platform": platform} if niche else {"platform": platform}
+        
+        # Support multiple niches (comma separated)
+        niches = [n.strip() for n in niche_param.split(',') if n.strip()]
+        if not niches: niches = ["trending"]
 
         webhook_id = self.SCRAPE_WEBHOOK_IDS.get(platform, self.SCRAPE_WEBHOOK_IDS["tiktok"])
-        success = trigger_n8n_webhook(webhook_id, payload, timeout=180)
+        overall_success = True
 
-        if not success:
-            return Response({"error": "Failed to trigger n8n scraping workflow"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        for niche in niches:
+            # Create a run record for EACH niche
+            run = WorkflowRun.objects.create(
+                platform=platform,
+                niche=niche,
+                status='running'
+            )
 
-        return Response({"success": True, "message": f"{platform.title()} scraping workflow triggered successfully."})
+            payload = {"niche": niche, "platform": platform, "run_id": run.id}
+            success = trigger_n8n_webhook(webhook_id, payload, timeout=120)
+            if not success: overall_success = False
+
+        if overall_success:
+            return Response({"success": True, "message": f"Scraping triggered for {len(niches)} niches."}, status=status.HTTP_200_OK)
+        return Response({"success": False, "message": "One or more scrapers failed to trigger."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class GetLatestSessionView(APIView):
     """GET /api/n8n/sessions/latest/ - Get the user's latest session"""
@@ -941,13 +1050,17 @@ class RecommendationsView(APIView):
         trending = list(TrendingVideo.objects.order_by('rank')[:15])
 
         # ── 2. Try Ollama (local, free) ──────────────────────────────────
-        if trending:
+        ollama_url = os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434')
+        if trending and ollama_url:
             try:
                 recs = self._ollama_recommendations(niches, trending)
                 if recs:
                     return Response(recs)
+            except requests.exceptions.ConnectionError:
+                # Ollama not installed / not running — use fallback silently
+                pass
             except Exception as e:
-                print(f"[recommendations] Ollama failed: {e}")
+                print(f"[recommendations] Ollama unexpected error: {e}")
 
         # ── 3. Rule-based fallback ───────────────────────────────────────
         return Response(self._rule_based(niches, trending))

@@ -17,6 +17,7 @@ from .views import (
     N8NCallbackView,
     MixVideoView,
     RecommendationsView,
+    InstagramReelListView,
 )
 
 urlpatterns = [
@@ -38,4 +39,5 @@ urlpatterns = [
     path('callback/', N8NCallbackView.as_view(), name='n8n-callback'),
     path('mix-video/', MixVideoView.as_view(), name='mix-video'),
     path('recommendations/', RecommendationsView.as_view(), name='recommendations'),
+    path('instagram-reels/', InstagramReelListView.as_view(), name='instagram-reels'),
 ]

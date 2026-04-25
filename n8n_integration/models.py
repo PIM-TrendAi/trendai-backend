@@ -2,6 +2,20 @@ from django.db import models
 from django.conf import settings
 import uuid
 
+class WorkflowRun(models.Model):
+    """Tracks a single execution of a scraping workflow (n8n or direct)"""
+    id = models.BigAutoField(primary_key=True)
+    platform = models.CharField(max_length=50, default='tiktok')
+    niche = models.CharField(max_length=255, blank=True, null=True)
+    status = models.CharField(max_length=50, default='running')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "workflow_runs"
+
+    def __str__(self):
+        return f"Run {self.id} - {self.platform} ({self.niche})"
+
 class TrendingVideo(models.Model):
     """Stores trending TikTok videos scraped by n8n daily (9AM trigger)"""
     id = models.BigAutoField(primary_key=True)
@@ -127,3 +141,28 @@ class ConnectedPlatform(models.Model):
 
     def __str__(self):
         return f"{self.creator_id} - {self.platform_name}"
+
+
+class InstagramReel(models.Model):
+    """
+    Maps to the instagram_reels table populated by the N8N Instagram scraping workflow.
+    managed=False: Django won\'t touch the schema — N8N upserts handle it.
+    """
+    reel_id = models.TextField(unique=True)          # Instagram shortCode
+    reel_url = models.TextField(null=True, blank=True)  # https://www.instagram.com/reels/<shortCode>/
+    thumbnail_url = models.TextField(null=True, blank=True)
+    caption = models.TextField(null=True, blank=True)
+    author = models.TextField(null=True, blank=True)  # @username
+    views = models.BigIntegerField(default=0)
+    likes = models.BigIntegerField(default=0)
+    niche = models.TextField(null=True, blank=True)   # niche tag used when triggered
+    hashtags = models.TextField(null=True, blank=True)  # raw PostgreSQL array string
+    scraped_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        managed = False
+        db_table = "instagram_reels"
+        ordering = ["-scraped_at", "-views"]
+
+    def __str__(self):
+        return f"{self.niche} - {self.reel_id}"

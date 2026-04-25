@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import TrendingVideo, CreatorSession, GeneratedScript, GeneratedVideo
+from .models import TrendingVideo, CreatorSession, GeneratedScript, GeneratedVideo, InstagramReel
 
 class TrendingVideoSerializer(serializers.ModelSerializer):
     class Meta:
@@ -40,3 +40,9 @@ class CombinedSessionStatusSerializer(serializers.Serializer):
     video_status = serializers.CharField(allow_null=True, required=False)
     
     tiktok_post_url = serializers.CharField(allow_null=True, required=False)
+
+
+class InstagramReelSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = InstagramReel
+        fields = '__all__'

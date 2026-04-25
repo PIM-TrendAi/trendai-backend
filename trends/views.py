@@ -82,13 +82,18 @@ class FacebookReelListView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
+        from django.db import connection
         try:
+            if 'facebook_reels' not in connection.introspection.table_names():
+                return FacebookReel.objects.none()
+                
             qs = FacebookReel.objects.all()
             niche = self.request.query_params.get("niche")
             if niche:
                 qs = qs.filter(niche__icontains=niche)
             return qs.order_by("-play_count")[:20]
-        except (ProgrammingError, OperationalError):
+        except Exception as e:
+            print(f"FacebookReelListView error: {e}")
             return FacebookReel.objects.none()
 
 
@@ -140,14 +145,18 @@ class YouTubeVideoListView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
+        from django.db import connection
         try:
+            if 'youtube_generated' not in connection.introspection.table_names():
+                return YouTubeVideo.objects.none()
+                
             qs = YouTubeVideo.objects.all()
             niche = self.request.query_params.get("niche")
             if niche:
                 qs = qs.filter(niche__icontains=niche)
             return qs.order_by("-vues")[:20]
-        except (ProgrammingError, OperationalError):
-            # Table doesn't exist yet (N8N hasn't run the first scrape)
+        except Exception as e:
+            print(f"YouTubeVideoListView error: {e}")
             return YouTubeVideo.objects.none()
 
 
