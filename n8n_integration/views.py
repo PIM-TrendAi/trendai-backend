@@ -419,17 +419,31 @@ class GeneratedVideosListView(APIView):
         return Response(data)
 
 from django.http import HttpResponse
+from django.db import connection
+from django.utils import timezone
 
 TIKTOK_CLIENT_KEY = "sbaw1tz2r0ocin57kl"
 TIKTOK_CLIENT_SECRET = "j0YE0fR0hOEWVqtt0FmrpsMVQb6r7Ua4"
-TIKTOK_REDIRECT_URI = "https://noncartelized-delightsomely-donetta.ngrok-free.dev/api/n8n/platforms/tiktok/callback/"
+TIKTOK_REDIRECT_URI = os.getenv(
+    "TIKTOK_REDIRECT_URI",
+    "https://noncartelized-delightsomely-donetta.ngrok-free.dev/webhook/c0a80001-0000-0000-0000-000000000002",
+)
 
 class ConnectedPlatformsView(APIView):
     """GET /api/n8n/platforms/ - Returns a list of the user's connected platforms"""
     permission_classes = [IsAuthenticated]
     def get(self, request):
         from platforms.models import UserPlatform
-        tiktok = ConnectedPlatform.objects.filter(creator_id=str(request.user.id), platform_name="tiktok").exists()
+        tiktok_connected_platform = ConnectedPlatform.objects.filter(
+            creator_id=str(request.user.id),
+            platform_name="tiktok",
+        ).exists()
+        tiktok_user_platform = UserPlatform.objects.filter(
+            user=request.user,
+            platform_name="TikTok",
+            connected=True,
+        ).exists()
+        tiktok = tiktok_connected_platform or tiktok_user_platform
         facebook = UserPlatform.objects.filter(user=request.user, platform_name="Facebook", connected=True).exists()
         instagram = UserPlatform.objects.filter(user=request.user, platform_name="Instagram", connected=True).exists()
         return Response([
@@ -438,6 +452,159 @@ class ConnectedPlatformsView(APIView):
             {"name": "YouTube", "connected": False},
             {"name": "Facebook", "connected": facebook},
         ])
+
+
+class PlatformStatusView(APIView):
+    """GET /api/n8n/platforms/<platform>/status/ - Returns whether a platform is connected"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, platform):
+        platform = (platform or "").lower()
+        from platforms.models import UserPlatform
+
+        if platform == "tiktok":
+            connected_platform = ConnectedPlatform.objects.filter(
+                creator_id=str(request.user.id),
+                platform_name="tiktok",
+            ).exists()
+            connected_user_platform = UserPlatform.objects.filter(
+                user=request.user,
+                platform_name="TikTok",
+                connected=True,
+            ).exists()
+            token_row_exists = False
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT 1 FROM tiktok_tokens WHERE creator_id = %s LIMIT 1",
+                        [str(request.user.id)],
+                    )
+                    token_row_exists = cursor.fetchone() is not None
+            except Exception:
+                token_row_exists = False
+
+            return Response({
+                "connected": connected_platform or connected_user_platform or token_row_exists
+            })
+
+        if platform == "instagram":
+            connected = UserPlatform.objects.filter(
+                user=request.user,
+                platform_name="Instagram",
+                connected=True,
+            ).exists()
+            return Response({"connected": connected})
+
+        if platform == "facebook":
+            connected = UserPlatform.objects.filter(
+                user=request.user,
+                platform_name="Facebook",
+                connected=True,
+            ).exists()
+            return Response({"connected": connected})
+
+        return Response({"error": "Platform not supported"}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class PlatformConnectView(APIView):
+    """POST /api/n8n/platforms/<platform>/connect/ - Marks a platform as connected"""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, platform):
+        platform = (platform or "").lower()
+        from platforms.models import UserPlatform
+
+        if platform == "instagram":
+            UserPlatform.objects.update_or_create(
+                user=request.user,
+                platform_name="Instagram",
+                defaults={
+                    "connected": True,
+                    "connected_at": timezone.now(),
+                },
+            )
+            return Response({"success": True, "connected": True})
+
+        if platform == "facebook":
+            UserPlatform.objects.update_or_create(
+                user=request.user,
+                platform_name="Facebook",
+                defaults={
+                    "connected": True,
+                    "connected_at": timezone.now(),
+                },
+            )
+            return Response({"success": True, "connected": True})
+
+        if platform == "tiktok":
+            return Response(
+                {
+                    "error": "TikTok requires OAuth. Use /api/n8n/platforms/tiktok/url/ first."
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response({"error": "Platform not supported"}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class PlatformDisconnectView(APIView):
+    """POST /api/n8n/platforms/<platform>/disconnect/ - Disconnects a platform"""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, platform):
+        platform = (platform or "").lower()
+        from platforms.models import UserPlatform
+
+        if platform == "tiktok":
+            ConnectedPlatform.objects.filter(
+                creator_id=str(request.user.id),
+                platform_name="tiktok",
+            ).delete()
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "DELETE FROM tiktok_tokens WHERE creator_id = %s",
+                        [str(request.user.id)],
+                    )
+            except Exception:
+                # Table may not exist in some environments; do not block disconnect.
+                pass
+            UserPlatform.objects.update_or_create(
+                user=request.user,
+                platform_name="TikTok",
+                defaults={
+                    "connected": False,
+                    "connected_at": None,
+                    "access_token": None,
+                },
+            )
+            return Response({"success": True, "connected": False})
+
+        if platform == "instagram":
+            UserPlatform.objects.update_or_create(
+                user=request.user,
+                platform_name="Instagram",
+                defaults={
+                    "connected": False,
+                    "connected_at": None,
+                    "access_token": None,
+                },
+            )
+            return Response({"success": True, "connected": False})
+
+        if platform == "facebook":
+            UserPlatform.objects.update_or_create(
+                user=request.user,
+                platform_name="Facebook",
+                defaults={
+                    "connected": False,
+                    "connected_at": None,
+                    "access_token": None,
+                },
+            )
+            return Response({"success": True, "connected": False})
+
+        return Response({"error": "Platform not supported"}, status=status.HTTP_400_BAD_REQUEST)
 
 import urllib.parse
 
@@ -499,6 +666,23 @@ class PlatformCallbackView(APIView):
                         "expires_in": expires_in
                     }
                 )
+
+                try:
+                    from accounts.models import User
+                    from platforms.models import UserPlatform
+                    user = User.objects.filter(id=state).first()
+                    if user:
+                        UserPlatform.objects.update_or_create(
+                            user=user,
+                            platform_name="TikTok",
+                            defaults={
+                                "connected": True,
+                                "connected_at": timezone.now(),
+                                "access_token": access_token,
+                            },
+                        )
+                except Exception:
+                    pass
                 
                 # Successful response that auto-closes the window
                 return HttpResponse("<html><head><meta name='viewport' content='width=device-width, initial-scale=1'></head><body style='font-family:sans-serif; text-align:center; padding-top: 50px;'><h1>TikTok Connected Successfully! 🚀</h1><p>You can close this window now and return to the app.</p><script>setTimeout(function(){window.close();}, 1500);</script></body></html>")
