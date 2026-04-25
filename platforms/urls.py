@@ -6,6 +6,7 @@ from .views import (
     FacebookOAuthStartView, FacebookOAuthCallbackView,
     FacebookConnectView, FacebookDisconnectView, FacebookStatusView,
     YouTubeConnectView, YouTubeDisconnectView, YouTubeStatusView,
+    ThreadsConnectView, ThreadsDisconnectView, ThreadsStatusView,
 )
 
 urlpatterns = [
@@ -26,4 +27,7 @@ urlpatterns = [
     path("youtube/connect/", YouTubeConnectView.as_view(), name="youtube-connect"),
     path("youtube/disconnect/", YouTubeDisconnectView.as_view(), name="youtube-disconnect"),
     path("youtube/status/", YouTubeStatusView.as_view(), name="youtube-status"),
+    path("threads/connect/", ThreadsConnectView.as_view(), name="threads-connect"),
+    path("threads/disconnect/", ThreadsDisconnectView.as_view(), name="threads-disconnect"),
+    path("threads/status/", ThreadsStatusView.as_view(), name="threads-status"),
 ]

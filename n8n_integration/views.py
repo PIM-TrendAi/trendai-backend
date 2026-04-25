@@ -137,60 +137,16 @@ class SessionStatusView(APIView):
             "tiktok_post_url": None,
         }
 
-        # For YouTube/Facebook: check their dedicated generated tables
-        if session.platform in ("youtube", "facebook"):
+        # For YouTube/Facebook/Threads: check their dedicated generated tables
+        if session.platform in ("youtube", "facebook", "threads"):
             from django.db import connection
             try:
-                with connection.cursor() as cursor:
-                    if session.platform == "facebook":
+                if session.platform == "threads":
+                    with connection.cursor() as cursor:
                         cursor.execute(
-                            "SELECT id, script_content, script_text, hook, body, cta, "
-                            "hook_text, video_prompt, caption, hashtags, music_vibe, "
-                            "reel_id, video_url, status "
-                            "FROM facebook_generated_videos "
-                            "WHERE user_id = %s ORDER BY id DESC LIMIT 1",
-                            [int(session.creator_id)]
-                        )
-                        row = cursor.fetchone()
-                        if row:
-                            (gen_id, script_content, script_text, hook, body, cta,
-                             hook_text, video_prompt, caption, hashtags, music_vibe,
-                             reel_id, video_url, gen_status) = row
-                            # Use full script_content (hook+body+cta), fallback to script_text
-                            full_script = script_content or script_text or ""
-                            payload["script_id"] = str(gen_id)
-                            payload["script_content"] = full_script
-                            payload["script_status"] = gen_status
-                            payload["hook"] = hook or ""
-                            payload["body"] = body or ""
-                            payload["cta"] = cta or ""
-                            payload["hook_text"] = hook_text or ""
-                            payload["video_prompt"] = video_prompt or ""
-                            payload["caption"] = caption or ""
-                            payload["hashtags"] = hashtags or ""
-                            payload["music_vibe"] = music_vibe or ""
-                            if video_url:
-                                payload["video_id"] = str(gen_id)
-                                payload["video_url"] = video_url
-                                payload["video_status"] = gen_status
-                            # Map facebook_generated_videos.status to session status
-                            if gen_status == "done":
-                                payload["status"] = "video_pending"
-                            elif gen_status == "processing":
-                                payload["status"] = "script_pending"
-                            elif gen_status == "approved":
-                                payload["status"] = "processing"
-                            elif gen_status in ("published", "posted"):
-                                payload["status"] = "posted"
-                            elif gen_status == "rejected":
-                                payload["status"] = "declined"
-                            else:
-                                payload["status"] = "script_generation"
-                    else:  # youtube
-                        cursor.execute(
-                            "SELECT id, script, title, description, tags, video_url, status "
-                            "FROM youtube_generated WHERE user_id = %s AND LOWER(niche) = LOWER(%s) ORDER BY id DESC LIMIT 1",
-                            [int(session.creator_id), session.niche]
+                            "SELECT id, script_text as script, NULL as title, NULL as description, NULL as tags, video_url, status "
+                            "FROM threads_generated_videos WHERE user_id = %s AND (post_id = %s OR LOWER(niche) = LOWER(%s)) ORDER BY id DESC LIMIT 1",
+                            [str(session.creator_id), session.selected_video_id, session.niche]
                         )
                         row = cursor.fetchone()
                         if row:
@@ -206,12 +162,86 @@ class SessionStatusView(APIView):
                                 payload["status"] = "script_pending"
                             elif gen_status == "approved":
                                 payload["status"] = "processing"
-                            elif gen_status == "posted":
+                            elif gen_status == "done":
+                                payload["status"] = "ready"
+                            elif gen_status in ("approved", "posted"):
                                 payload["status"] = "posted"
                             elif gen_status == "rejected":
                                 payload["status"] = "declined"
                             else:
                                 payload["status"] = "script_generation"
+                else:
+                    with connection.cursor() as cursor:
+                        if session.platform == "facebook":
+                            cursor.execute(
+                                "SELECT id, script_content, script_text, hook, body, cta, "
+                                "hook_text, video_prompt, caption, hashtags, music_vibe, "
+                                "reel_id, video_url, status "
+                                "FROM facebook_generated_videos "
+                                "WHERE user_id = %s ORDER BY id DESC LIMIT 1",
+                                [int(session.creator_id)]
+                            )
+                            row = cursor.fetchone()
+                            if row:
+                                (gen_id, script_content, script_text, hook, body, cta,
+                                 hook_text, video_prompt, caption, hashtags, music_vibe,
+                                 reel_id, video_url, gen_status) = row
+                                full_script = script_content or script_text or ""
+                                payload["script_id"] = str(gen_id)
+                                payload["script_content"] = full_script
+                                payload["script_status"] = gen_status
+                                payload["hook"] = hook or ""
+                                payload["body"] = body or ""
+                                payload["cta"] = cta or ""
+                                payload["hook_text"] = hook_text or ""
+                                payload["video_prompt"] = video_prompt or ""
+                                payload["caption"] = caption or ""
+                                payload["hashtags"] = hashtags or ""
+                                payload["music_vibe"] = music_vibe or ""
+                                if video_url:
+                                    payload["video_id"] = str(gen_id)
+                                    payload["video_url"] = video_url
+                                    payload["video_status"] = gen_status
+                                if gen_status == "done":
+                                    payload["status"] = "ready"
+                                elif gen_status == "processing":
+                                    payload["status"] = "processing"
+                                elif gen_status == "approved":
+                                    payload["status"] = "processing"
+                                elif gen_status in ("published", "posted"):
+                                    payload["status"] = "posted"
+                                elif gen_status == "rejected":
+                                    payload["status"] = "declined"
+                                else:
+                                    payload["status"] = "script_generation"
+                        else:  # youtube
+                            cursor.execute(
+                                "SELECT id, script, title, description, tags, video_url, status "
+                                "FROM youtube_generated WHERE user_id = %s AND LOWER(niche) = LOWER(%s) ORDER BY id DESC LIMIT 1",
+                                [int(session.creator_id), session.niche]
+                            )
+                            row = cursor.fetchone()
+                            if row:
+                                gen_id, script, title, description, tags, video_url, gen_status = row
+                                payload["script_id"] = str(gen_id)
+                                payload["script_content"] = script
+                                payload["script_status"] = gen_status
+                                if video_url:
+                                    payload["video_id"] = str(gen_id)
+                                    payload["video_url"] = video_url
+                                    payload["video_status"] = gen_status
+                                if gen_status == "pending_review":
+                                    payload["status"] = "processing"
+                                elif gen_status == "approved":
+                                    payload["status"] = "ready"
+                                elif gen_status == "posted":
+                                    payload["status"] = "posted"
+                                elif gen_status == "rejected":
+                                    payload["status"] = "declined"
+                                elif gen_status == "draft":
+                                    payload["status"] = "draft"
+                                else:
+                                    payload["status"] = "script_generation"
             except Exception as e:
                 print(f"Error checking {session.platform} generated table: {e}")
 
@@ -283,6 +313,8 @@ class StartWorkflowView(APIView):
                 "title": request.data.get("title", ""),
                 "custom_prompt": request.data.get("custom_prompt", ""),
                 "prompt": request.data.get("custom_prompt", ""),
+                "post_id": selected_video_id,
+                "reel_id": selected_video_id,
             }
 
             if platform == "instagram":
@@ -420,6 +452,8 @@ class ApproveVideoView(APIView):
     VIDEO_APPROVE_WEBHOOK_PATH = os.getenv("N8N_VIDEO_APPROVE_WEBHOOK_PATH", "tiktok-video-approve")
     INSTAGRAM_VIDEO_APPROVE_PATH = "instagram-video-approve"
     FACEBOOK_VIDEO_APPROVE_PATH = os.getenv("N8N_FACEBOOK_VIDEO_APPROVE_PATH", "facebook-video-approve")
+    THREADS_VIDEO_APPROVE_PATH = "threads-video-approve"
+    YOUTUBE_VIDEO_APPROVE_PATH = "youtube-video-approve"
 
     def post(self, request):
         session_id = request.data.get("session_id")
@@ -427,6 +461,25 @@ class ApproveVideoView(APIView):
         approved = request.data.get("approved", False)
         decision = "approve" if approved else "decline"
         platform = request.data.get("platform", "tiktok").lower()
+        is_draft = request.data.get("is_draft", False)
+
+        if is_draft:
+            try:
+                from django.db import connection
+                if platform == "threads":
+                    with connection.cursor() as cursor:
+                        cursor.execute("UPDATE threads_generated_videos SET status = 'draft' WHERE id = %s", [video_id])
+                elif platform == "youtube":
+                    with connection.cursor() as cursor:
+                        cursor.execute("UPDATE youtube_generated SET status = 'draft' WHERE id = %s", [video_id])
+                elif platform == "facebook":
+                    with connection.cursor() as cursor:
+                        cursor.execute("UPDATE facebook_generated_videos SET status = 'draft' WHERE id = %s", [video_id])
+                else:
+                    GeneratedVideo.objects.filter(video_id=video_id).update(status='draft')
+                return Response({"success": True})
+            except Exception as e:
+                return Response({"error": f"Failed to save draft locally: {e}"}, status=400)
 
         payload = {
             "sessionId": session_id,
@@ -443,6 +496,10 @@ class ApproveVideoView(APIView):
             success = trigger_n8n_webhook(self.FACEBOOK_VIDEO_APPROVE_PATH, payload)
         elif platform == "instagram":
             success = trigger_n8n_webhook(self.INSTAGRAM_VIDEO_APPROVE_PATH, payload)
+        elif platform == "threads":
+            success = trigger_n8n_webhook(self.THREADS_VIDEO_APPROVE_PATH, payload)
+        elif platform == "youtube":
+            success = trigger_n8n_webhook(self.YOUTUBE_VIDEO_APPROVE_PATH, payload)
         else:
             # TikTok path: include access token
             token = ""
@@ -478,16 +535,84 @@ class GeneratedVideosListView(APIView):
             ).order_by('-created_at').first()
 
             session = CreatorSession.objects.filter(session_id=v.session_id).first()
+            
+            # Fallback to chosen trending video thumbnail if generated one is missing
+            thumb = v.thumbnail_url
+            if not thumb and session:
+                trending = TrendingVideo.objects.filter(video_id=session.selected_video_id).first()
+                if trending:
+                    thumb = trending.thumbnail_url
 
             data.append({
                 'video_id': v.video_id,
                 'session_id': v.session_id,
                 'video_url': v.video_url,
+                'thumbnail_url': thumb or '',
                 'status': v.status,
                 'niche': session.niche if session else '',
                 'script_preview': (script.script_content[:120] + '...') if script else '',
                 'created_at': v.created_at.isoformat() if v.created_at else None,
             })
+
+        # 2. Fetch from n8n-managed tables (YouTube, Facebook, Threads)
+        user_id_str = str(request.user.id)
+        try:
+            from django.db import connection
+            with connection.cursor() as cursor:
+                # Threads
+                cursor.execute(
+                    "SELECT id, script_text, video_url, status FROM threads_generated_videos WHERE user_id = %s",
+                    [user_id_str]
+                )
+                for row in cursor.fetchall():
+                    gen_id, script_text, video_url, gen_status = row
+                    data.append({
+                        'video_id': str(gen_id),
+                        'session_id': f'threads_{gen_id}',
+                        'video_url': video_url or '',
+                        'status': gen_status,
+                        'niche': 'Threads',
+                        'script_preview': ((script_text or '')[:120] + '...') if script_text else '',
+                        'created_at': None,
+                    })
+
+                # Facebook
+                cursor.execute(
+                    "SELECT id, script_content as script, video_url, thumbnail_url, status FROM facebook_generated_videos WHERE user_id = %s",
+                    [int(user_id_str)]
+                )
+                for row in cursor.fetchall():
+                    gen_id, script, video_url, thumbnail_url, gen_status = row
+                    data.append({
+                        'video_id': str(gen_id),
+                        'session_id': f'facebook_{gen_id}',
+                        'video_url': video_url or '',
+                        'thumbnail_url': thumbnail_url or '',
+                        'status': gen_status,
+                        'niche': 'Facebook',
+                        'script_preview': ((script or '')[:120] + '...') if script else '',
+                        'created_at': None,
+                    })
+
+                # YouTube
+                cursor.execute(
+                    "SELECT id, script, video_url, thumbnail_url, status FROM youtube_generated WHERE user_id = %s",
+                    [int(user_id_str)]
+                )
+                for row in cursor.fetchall():
+                    gen_id, script, video_url, thumbnail_url, gen_status = row
+                    data.append({
+                        'video_id': str(gen_id),
+                        'session_id': f'youtube_{gen_id}',
+                        'video_url': video_url or '',
+                        'thumbnail_url': thumbnail_url or '',
+                        'status': gen_status,
+                        'niche': 'YouTube',
+                        'script_preview': ((script or '')[:120] + '...') if script else '',
+                        'created_at': None,
+                    })
+        except Exception as e:
+            print(f"Error fetching from n8n tables: {e}")
 
         return Response(data)
 

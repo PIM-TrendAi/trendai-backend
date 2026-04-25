@@ -119,27 +119,60 @@ class AnalyticsSummaryView(APIView):
 
     def get(self, request):
         token = _get_tiktok_token(request.user)
-        if not token:
-            return Response(_empty_summary())
+        fb_token = _get_facebook_token(request.user)
+        ig_token = _get_instagram_token(request.user)
 
-        user_info = _fetch_user_info(token) or {}
-        videos = _fetch_all_videos(token)
+        # 1. TikTok Stats
+        tk_score = 0
+        total_views = 0
+        engagement = 0.0
+        followers = 0
+        if token:
+            user_info = _fetch_user_info(token) or {}
+            videos = _fetch_all_videos(token)
+            followers = user_info.get("follower_count", 0)
+            tk_likes = user_info.get("likes_count", 0)
+            tk_views = sum(v.get("view_count", 0) for v in videos)
+            tk_comments = sum(v.get("comment_count", 0) for v in videos)
+            tk_shares = sum(v.get("share_count", 0) for v in videos)
+            tk_interactions = tk_likes + tk_comments + tk_shares
+            
+            total_views = tk_views
+            engagement = round((tk_interactions / tk_views * 100), 1) if tk_views > 0 else 0.0
+            tk_score = min(100, round((engagement * 0.4) + (min(tk_views, 1_000_000) / 10_000)))
 
-        followers = user_info.get("follower_count", 0)
-        total_likes = user_info.get("likes_count", 0)
-        total_views = sum(v.get("view_count", 0) for v in videos)
-        total_comments = sum(v.get("comment_count", 0) for v in videos)
-        total_shares = sum(v.get("share_count", 0) for v in videos)
-        interactions = total_likes + total_comments + total_shares
+        # 2. Facebook Stats
+        fb_score = 0
+        if fb_token:
+            fb_posts = _fetch_fb_posts(fb_token)
+            f_likes = sum(p.get("likes", {}).get("summary", {}).get("total_count", 0) for p in fb_posts)
+            f_views = sum(p.get("impressions", 0) for p in fb_posts)
+            if f_views > 0:
+                f_eng = (f_likes / f_views) * 100
+                fb_score = min(100, round((f_eng * 5) + (min(f_views, 500_000) / 5_000)))
 
-        engagement = round((interactions / total_views * 100), 1) if total_views > 0 else 0.0
-        viral_score = min(100, round((engagement * 0.4) + (min(total_views, 1_000_000) / 10_000)))
+        # 3. Instagram Stats
+        ig_score = 0
+        if ig_token:
+            ig_media = _fetch_ig_media(ig_token)
+            i_likes = sum(m.get("like_count", 0) for m in ig_media)
+            i_views = sum(m.get("reach", 0) for m in ig_media)
+            if i_views > 0:
+                i_eng = (i_likes / i_views) * 100
+                ig_score = min(100, round((i_eng * 6) + (min(i_views, 500_000) / 5_000)))
 
         return Response({
             "total_views":  _metric(total_views,  _fmt(total_views)),
             "engagement":   _metric(engagement,   f"{engagement}%"),
             "followers":    _metric(followers,     _fmt(followers)),
-            "viral_score":  _metric(viral_score,   str(viral_score)),
+            "viral_score":  _metric(tk_score,      str(tk_score)),
+            "heatmap": {
+                "TikTok": tk_score if token else 0,
+                "Instagram": ig_score if ig_token else 0,
+                "YouTube": 78, # Mock for now
+                "Facebook": fb_score if fb_token else 0,
+                "X": 71, # Mock for now
+            }
         })
 
 
@@ -399,7 +432,7 @@ class InstagramStatsView(APIView):
 
 # ── Facebook Stats ────────────────────────────────────────────────────────────
 
-FB_GRAPH_BASE = "https://graph.facebook.com/v21.0"
+FB_GRAPH_BASE = "https://graph.facebook.com/v24.0"
 FB_PAGE_ID = os.getenv("FACEBOOK_PAGE_ID", "me")
 
 
@@ -407,9 +440,13 @@ def _get_facebook_token(user):
     """Return the stored Facebook access token for *user*, or None."""
     try:
         platform = UserPlatform.objects.get(user=user, platform_name="Facebook")
-        return platform.access_token if platform.connected else None
+        if platform.connected and platform.access_token:
+            return platform.access_token
     except UserPlatform.DoesNotExist:
-        return None
+        pass
+    
+    # Global fallback if specified in .env
+    return os.getenv("FACEBOOK_ACCESS_TOKEN")
 
 
 def _fetch_fb_page_info(token):
@@ -444,21 +481,29 @@ def _fetch_fb_posts(token, limit=20):
             return []
         posts = resp.json().get("data", [])
 
-        # Fetch impressions per post (best-effort)
+        # Fetch impressions and video views per post
         for post in posts:
+            post.setdefault("impressions", 0)
+            post.setdefault("video_views", 0)
             try:
+                # Expanded metrics for different types of video content
+                metrics = "post_impressions_unique,post_video_views,post_video_views_clicked_to_play"
                 r = httpx.get(
                     f"{FB_GRAPH_BASE}/{post['id']}/insights",
-                    params={"metric": "post_impressions_unique", "access_token": token},
+                    params={"metric": metrics, "access_token": token},
                     timeout=8,
                 )
                 if r.status_code == 200:
                     for m in r.json().get("data", []):
-                        if m.get("name") == "post_impressions_unique":
-                            values = m.get("values", [])
-                            post["impressions"] = values[-1]["value"] if values else 0
+                        val = m.get("values", [{}])[-1].get("value", 0)
+                        m_name = m.get("name")
+                        if m_name == "post_impressions_unique":
+                            post["impressions"] = val
+                        elif m_name in ["post_video_views", "post_video_views_clicked_to_play"]:
+                            # Aggregate views if multiple metrics return
+                            post["video_views"] = max(post["video_views"], val)
             except Exception:
-                post.setdefault("impressions", 0)
+                pass
 
         return posts
     except httpx.HTTPError:
@@ -494,7 +539,12 @@ class FacebookStatsView(APIView):
         total_likes = sum(_likes(p) for p in posts)
         total_comments = sum(_comments(p) for p in posts)
         total_impressions = sum(p.get("impressions", 0) for p in posts)
+        total_views = sum(p.get("video_views", 0) for p in posts)
         total_shares = sum(_shares(p) for p in posts)
+
+        # Fans (Likes) vs Followers
+        fans = profile.get("fan_count", 0) if profile else 0
+        followers = profile.get("followers_count", 0) if profile else 0
 
         return Response({
             "connected": True,
@@ -510,6 +560,7 @@ class FacebookStatsView(APIView):
                     "comments": _comments(p),
                     "shares": _shares(p),
                     "impressions": p.get("impressions", 0),
+                    "views": p.get("video_views", 0),
                 }
                 for p in posts
             ],
@@ -517,8 +568,10 @@ class FacebookStatsView(APIView):
                 "total_likes": total_likes,
                 "total_comments": total_comments,
                 "total_impressions": total_impressions,
+                "total_views": total_views,
                 "total_shares": total_shares,
-                "fans": profile.get("fan_count", 0) if profile else 0,
+                "fans": fans,
+                "followers": followers,
             },
         })
 

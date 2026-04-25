@@ -28,7 +28,7 @@ TIKTOK_VIDEO_QUERY_URL = "https://open.tiktokapis.com/v2/video/query/"
 POLL_INTERVAL_SECONDS = 30
 MAX_VIDEOS = 20
 
-FB_GRAPH_BASE = "https://graph.facebook.com/v21.0"
+FB_GRAPH_BASE = "https://graph.facebook.com/v24.0"
 import os
 FB_PAGE_ID = os.getenv("FACEBOOK_PAGE_ID", "me")
 
@@ -320,15 +320,43 @@ class FacebookStatsConsumer(AsyncWebsocketConsumer):
 
         posts = []
         for p in posts_raw:
+            pid = p.get("id", "")
+            likes = p.get("likes", {}).get("summary", {}).get("total_count", 0)
+            comments = p.get("comments", {}).get("summary", {}).get("total_count", 0)
+            shares = p.get("shares", {}).get("count", 0)
+            
+            # Additional fetch for insights if token allows
+            impressions = 0
+            views = 0
+            try:
+                # Expanded metrics for different types of video content
+                metrics = "post_impressions_unique,post_video_views,post_video_views_clicked_to_play"
+                r_insights = await self._http_client.get(
+                    f"{FB_GRAPH_BASE}/{pid}/insights",
+                    params={"metric": metrics, "access_token": access_token},
+                )
+                if r_insights.status_code == 200:
+                    for m in r_insights.json().get("data", []):
+                        val = m.get("values", [{}])[-1].get("value", 0)
+                        m_name = m.get("name")
+                        if m_name == "post_impressions_unique":
+                            impressions = val
+                        elif m_name in ["post_video_views", "post_video_views_clicked_to_play"]:
+                            views = max(views, val)
+            except Exception:
+                pass
+
             posts.append({
-                "post_id": p.get("id", ""),
+                "post_id": pid,
                 "message": (p.get("message") or "")[:120],
                 "created_time": p.get("created_time", ""),
                 "thumbnail_url": p.get("full_picture", ""),
                 "permalink": p.get("permalink_url", ""),
-                "likes": p.get("likes", {}).get("summary", {}).get("total_count", 0),
-                "comments": p.get("comments", {}).get("summary", {}).get("total_count", 0),
-                "shares": p.get("shares", {}).get("count", 0),
+                "likes": likes,
+                "comments": comments,
+                "shares": shares,
+                "impressions": impressions,
+                "views": views,
             })
 
         return {"posts": posts, "last_updated": self._now_iso()}

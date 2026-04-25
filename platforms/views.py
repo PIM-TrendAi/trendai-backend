@@ -404,9 +404,15 @@ class FacebookStatusView(APIView):
     def get(self, request):
         try:
             platform = UserPlatform.objects.get(user=request.user, platform_name="Facebook")
-            return Response({"connected": platform.connected})
+            is_connected = platform.connected
         except UserPlatform.DoesNotExist:
-            return Response({"connected": False})
+            is_connected = False
+        
+        # Also return true if manual token is set in .env
+        if not is_connected and os.getenv("FACEBOOK_ACCESS_TOKEN"):
+            is_connected = True
+            
+        return Response({"connected": is_connected})
 
 
 # ── YouTube Connect/Disconnect/Status ─────────────────────────────────
@@ -450,6 +456,52 @@ class YouTubeStatusView(APIView):
     def get(self, request):
         try:
             platform = UserPlatform.objects.get(user=request.user, platform_name="YouTube")
+            return Response({"connected": platform.connected})
+        except UserPlatform.DoesNotExist:
+            return Response({"connected": False})
+
+
+# ── Threads Connect/Disconnect/Status ─────────────────────────────────
+
+
+class ThreadsConnectView(APIView):
+    """POST /api/platforms/threads/connect/ — Store the Threads token and mark connected."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        platform, _ = UserPlatform.objects.get_or_create(
+            user=request.user, platform_name="Threads"
+        )
+        platform.access_token = request.data.get("access_token", "manual_threads_token")
+        platform.connected = True
+        platform.connected_at = timezone.now()
+        platform.save()
+        return Response({"status": "connected"})
+
+
+class ThreadsDisconnectView(APIView):
+    """POST /api/platforms/threads/disconnect/ — Clear token and mark disconnected."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        try:
+            platform = UserPlatform.objects.get(user=request.user, platform_name="Threads")
+            platform.access_token = None
+            platform.connected = False
+            platform.connected_at = None
+            platform.save()
+        except UserPlatform.DoesNotExist:
+            pass
+        return Response({"status": "disconnected"})
+
+
+class ThreadsStatusView(APIView):
+    """GET /api/platforms/threads/status/ — Check if Threads is connected."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        try:
+            platform = UserPlatform.objects.get(user=request.user, platform_name="Threads")
             return Response({"connected": platform.connected})
         except UserPlatform.DoesNotExist:
             return Response({"connected": False})

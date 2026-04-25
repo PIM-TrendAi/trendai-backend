@@ -73,6 +73,7 @@ class GeneratedVideo(models.Model):
     session_id = models.CharField(max_length=255)
     creator_id = models.CharField(max_length=255, blank=True, null=True)
     video_url = models.URLField(max_length=1000)
+    thumbnail_url = models.URLField(max_length=1000, blank=True, null=True)
     audio_url = models.URLField(max_length=1000, blank=True, null=True)
     prompt_used = models.TextField(blank=True, null=True)
     status = models.CharField(max_length=50, default='pending_approval')
@@ -117,6 +118,7 @@ class FacebookGeneratedVideo(models.Model):
     title = models.TextField(blank=True, null=True)
 
     video_url = models.URLField(max_length=1000, blank=True, null=True)
+    thumbnail_url = models.URLField(max_length=1000, blank=True, null=True)
     status = models.CharField(max_length=50, default='processing')
     created_at = models.DateTimeField(auto_now_add=True)
 
