@@ -318,12 +318,14 @@ IG_GRAPH_BASE = "https://graph.facebook.com/v21.0"
 
 
 def _get_instagram_token(user):
-    """Return the stored Instagram access token for *user*, or None."""
+    """Return the stored Instagram access token for *user*, or .env fallback."""
     try:
         platform = UserPlatform.objects.get(user=user, platform_name="Instagram")
-        return platform.access_token if platform.connected else None
+        if platform.connected and platform.access_token:
+            return platform.access_token
     except UserPlatform.DoesNotExist:
-        return None
+        pass
+    return os.getenv("INSTAGRAM_ACCESS_TOKEN")
 
 
 def _fetch_ig_media(token, limit=20):

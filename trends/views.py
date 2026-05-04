@@ -10,8 +10,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 
-from .models import Trend, SavedTrend, FacebookReel, YouTubeVideo
-from .serializers import TrendSerializer, SavedTrendSerializer, FacebookReelSerializer, YouTubeVideoSerializer
+from .models import Trend, SavedTrend, FacebookReel, YouTubeVideo, ThreadsPost
+from .serializers import TrendSerializer, SavedTrendSerializer, FacebookReelSerializer, YouTubeVideoSerializer, ThreadsPostSerializer
 
 
 class TrendListView(generics.ListAPIView):
@@ -223,6 +223,60 @@ class YouTubeScrapeTriggerView(APIView):
                 return Response({"error": f"N8N returned {resp.status_code}: {resp.text[:200]}"}, status=status.HTTP_400_BAD_REQUEST)
             except requests.exceptions.ReadTimeout:
                 return Response({"message": f"YouTube scraping triggered (N8N is processing).", "niche": niche})
+            except requests.exceptions.ConnectionError:
+                continue
+            except Exception as e:
+                return Response({"error": str(e)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        return Response({"error": "Could not reach N8N. Make sure the workflow is active."}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+class ThreadsPostListView(generics.ListAPIView):
+    """GET /api/trends/threads-posts/ — List scraped Threads posts from the N8N-managed table."""
+    serializer_class = ThreadsPostSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        try:
+            qs = ThreadsPost.objects.all()
+            niche = self.request.query_params.get("niche")
+            if niche:
+                qs = qs.filter(niche__icontains=niche)
+            return qs.order_by("-like_count")[:20]
+        except (ProgrammingError, OperationalError):
+            return ThreadsPost.objects.none()
+
+
+class ThreadsScrapeTriggerView(APIView):
+    """POST /api/trends/threads-scrape/ — Trigger the N8N Threads scraping webhook."""
+    permission_classes = [IsAuthenticated]
+
+    SCRAPE_WEBHOOK_PATH = os.getenv("N8N_THREADS_SCRAPE_WEBHOOK_PATH", "threads-scrape")
+
+    def post(self, request):
+        niche = request.data.get("niche", "")
+        if not niche and hasattr(request.user, 'categories') and request.user.categories:
+            niche = request.user.categories[0]
+
+        base_url = os.getenv("N8N_WEBHOOK_BASE_URL", "").rstrip("/")
+        if not base_url:
+            return Response({"error": "N8N_WEBHOOK_BASE_URL is not configured."}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        payload = {"niche": niche or "general"}
+        endpoints = [
+            f"{base_url}/webhook/{self.SCRAPE_WEBHOOK_PATH}",
+            f"{base_url}/webhook-test/{self.SCRAPE_WEBHOOK_PATH}",
+        ]
+
+        for url in endpoints:
+            try:
+                resp = requests.post(url, json=payload, timeout=(5, 30))
+                if resp.status_code in (200, 201):
+                    return Response({"message": f"Threads scraping triggered for niche '{niche}'.", "niche": niche})
+                if resp.status_code == 404:
+                    continue
+                return Response({"error": f"N8N returned {resp.status_code}: {resp.text[:200]}"}, status=status.HTTP_400_BAD_REQUEST)
+            except requests.exceptions.ReadTimeout:
+                return Response({"message": f"Threads scraping triggered (N8N is processing).", "niche": niche})
             except requests.exceptions.ConnectionError:
                 continue
             except Exception as e:

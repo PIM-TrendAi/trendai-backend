@@ -249,7 +249,14 @@ class FacebookStatsConsumer(AsyncWebsocketConsumer):
             return
 
         self._platform = await self._get_fb_platform()
-        if not self._platform or not self._platform.access_token:
+        # Fallback to .env if not connected in DB
+        self._access_token = None
+        if self._platform and self._platform.access_token:
+            self._access_token = self._platform.access_token
+        else:
+            self._access_token = os.getenv("FACEBOOK_ACCESS_TOKEN")
+
+        if not self._access_token:
             await self.accept()
             await self.send(json.dumps({"error": "facebook_not_connected"}))
             await self.close(code=CODE_NO_FB_TOKEN)
@@ -288,13 +295,16 @@ class FacebookStatsConsumer(AsyncWebsocketConsumer):
             await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
     async def _fetch_fb_stats(self) -> Optional[dict]:
+        # Refresh from DB if possible, otherwise use what we have
         platform = await self._get_fb_platform()
-        if not platform or not platform.access_token:
+        access_token = self._access_token
+        if platform and platform.access_token:
+            access_token = platform.access_token
+        
+        if not access_token:
             await self.send(json.dumps({"error": "facebook_not_connected"}))
             await self.close()
             return None
-
-        access_token = platform.access_token
 
         try:
             resp = await self._http_client.get(

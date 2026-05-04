@@ -11,8 +11,8 @@ from rest_framework import generics, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
-from .models import TrendingVideo, CreatorSession, GeneratedScript, GeneratedVideo, PostedVideo, ConnectedPlatform
-from .serializers import TrendingVideoSerializer, CombinedSessionStatusSerializer
+from .models import TrendingVideo, CreatorSession, GeneratedScript, GeneratedVideo, PostedVideo, ConnectedPlatform, WorkflowRun, InstagramReel
+from .serializers import TrendingVideoSerializer, CombinedSessionStatusSerializer, InstagramReelSerializer
 
 def trigger_n8n_webhook(webhook_id: str, payload: dict, fallback_ids=None, timeout=30):
     base_url = os.getenv("N8N_WEBHOOK_BASE_URL", "").rstrip("/")
@@ -114,6 +114,30 @@ class TrendingVideoListView(generics.ListAPIView):
         # Return top 10 matches
         return queryset[:10]
 
+
+class InstagramReelListView(generics.ListAPIView):
+    """GET /api/n8n/instagram-reels/ — optional ?niche=fitness or ?niche=fitness,tech"""
+    serializer_class = InstagramReelSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        from django.db import connection
+        try:
+            qs = InstagramReel.objects.all()
+            niche_param = self.request.query_params.get('niche', '').strip()
+            if niche_param:
+                from django.db.models import Q
+                niches = [n.strip().lower() for n in niche_param.split(',') if n.strip()]
+                query = Q()
+                for n in niches:
+                    query |= Q(niche__icontains=n)
+                qs = qs.filter(query)
+            return qs.order_by('-scraped_at', '-views')[:50]
+        except Exception as e:
+            print(f"InstagramReelListView error: {e}")
+            return InstagramReel.objects.order_by('-scraped_at')[:30]
+
+
 class SessionStatusView(APIView):
     """GET /api/n8n/sessions/{session_id}/ - Aggregates the session status across multiple tables"""
     permission_classes = [IsAuthenticated]
@@ -145,8 +169,8 @@ class SessionStatusView(APIView):
                     with connection.cursor() as cursor:
                         cursor.execute(
                             "SELECT id, script_text as script, NULL as title, NULL as description, NULL as tags, video_url, status "
-                            "FROM threads_generated_videos WHERE user_id = %s AND (post_id = %s OR LOWER(niche) = LOWER(%s)) ORDER BY id DESC LIMIT 1",
-                            [str(session.creator_id), session.selected_video_id, session.niche]
+                            "FROM threads_generated_videos WHERE session_id = %s ORDER BY id DESC LIMIT 1",
+                            [session_id]
                         )
                         row = cursor.fetchone()
                         if row:
@@ -158,13 +182,23 @@ class SessionStatusView(APIView):
                                 payload["video_id"] = str(gen_id)
                                 payload["video_url"] = video_url
                                 payload["video_status"] = gen_status
-                            if gen_status == "pending_review":
+
+                            # Map DB status to frontend workflow status
+                            if gen_status == "done":
+                                payload["status"] = "ready"
+                            elif gen_status == "processing":
+                                # If we have a script already, let the user review it while video generates
+                                if script:
+                                    payload["status"] = "script_pending"
+                                    payload["script_status"] = "pending_approval"
+                                else:
+                                    payload["status"] = "script_generation"
+                            elif gen_status == "pending_review":
                                 payload["status"] = "script_pending"
+                                payload["script_status"] = "pending_approval"
                             elif gen_status == "approved":
                                 payload["status"] = "processing"
-                            elif gen_status == "done":
-                                payload["status"] = "ready"
-                            elif gen_status in ("approved", "posted"):
+                            elif gen_status in ("published", "posted"):
                                 payload["status"] = "posted"
                             elif gen_status == "rejected":
                                 payload["status"] = "declined"
@@ -205,7 +239,11 @@ class SessionStatusView(APIView):
                                 if gen_status == "done":
                                     payload["status"] = "ready"
                                 elif gen_status == "processing":
-                                    payload["status"] = "processing"
+                                    # If we have a script already, let the user review it while video generates
+                                    if full_script:
+                                        payload["status"] = "script_pending"
+                                    else:
+                                        payload["status"] = "processing"
                                 elif gen_status == "approved":
                                     payload["status"] = "processing"
                                 elif gen_status in ("published", "posted"):
@@ -214,6 +252,10 @@ class SessionStatusView(APIView):
                                     payload["status"] = "declined"
                                 else:
                                     payload["status"] = "script_generation"
+
+                                # Critical: Ensure script review screen sees it as ready if script content exists
+                                if full_script and gen_status in ("processing", "done", "approved"):
+                                    payload["script_status"] = "pending_approval"
                         else:  # youtube
                             cursor.execute(
                                 "SELECT id, script, title, description, tags, video_url, status "
@@ -318,6 +360,16 @@ class StartWorkflowView(APIView):
             }
 
             if platform == "instagram":
+                session_id = f"{request.user.id}_{int(time.time() * 1000)}"
+                CreatorSession.objects.create(
+                    session_id=session_id,
+                    creator_id=str(request.user.id),
+                    selected_video_id=selected_video_id,
+                    niche=niche,
+                    platform="instagram",
+                    status="script_generation",
+                )
+                payload["session_id"] = session_id
                 success = trigger_n8n_webhook(
                     self.INSTAGRAM_START_WEBHOOK_PATH,
                     payload,
@@ -353,7 +405,34 @@ class StartWorkflowView(APIView):
                     self.YOUTUBE_START_WEBHOOK_PATH,
                     payload,
                 )
-            else:
+            elif platform == "threads":
+                session_id = f"threads_{request.user.id}_{int(time.time() * 1000)}"
+                # We don't necessarily need a CreatorSession if threads_generated_videos tracks it,
+                # but the app expects a session_id to poll.
+                CreatorSession.objects.create(
+                    session_id=session_id,
+                    creator_id=str(request.user.id),
+                    selected_video_id=selected_video_id,
+                    niche=niche,
+                    platform="threads",
+                    status="script_generation",
+                )
+                payload["session_id"] = session_id
+                success = trigger_n8n_webhook(
+                    "threads-generate",
+                    payload,
+                )
+            else:  # TikTok
+                session_id = f"{request.user.id}_{int(time.time() * 1000)}"
+                CreatorSession.objects.create(
+                    session_id=session_id,
+                    creator_id=str(request.user.id),
+                    selected_video_id=selected_video_id,
+                    niche=niche,
+                    platform="tiktok",
+                    status="script_generation",
+                )
+                payload["session_id"] = session_id
                 success = trigger_n8n_webhook(
                     self.TIKTOK_START_WEBHOOK_ID,
                     payload,
@@ -363,7 +442,7 @@ class StartWorkflowView(APIView):
             if not success:
                 return Response({"error": "Failed to trigger n8n workflow. Please ensure it is active or listening in n8n."}, status=status.HTTP_502_BAD_GATEWAY)
 
-            return Response({"success": True, "message": f"{platform.title()} workflow started. Session is initializing in n8n."})
+            return Response({"success": True, "session_id": session_id, "message": f"{platform.title()} workflow started. Session is initializing in n8n."})
         except Exception as exc:
             print(f"StartWorkflowView failed unexpectedly: {exc}")
             return Response({"error": "Failed to start video generation workflow."}, status=status.HTTP_502_BAD_GATEWAY)
@@ -375,26 +454,30 @@ class TriggerScrapingView(APIView):
     # Webhook IDs by platform
     SCRAPE_WEBHOOK_IDS = {
         "tiktok": "8a4b64f3-ac29-4591-a1b7-4c2089f92bb4",
-        "instagram": "instagram-scrape",
+        "instagram": "instagram-scrape-v2",
         # Must match the n8n Webhook Trigger node path exactly (path: "scrape")
         "facebook": os.getenv("N8N_FACEBOOK_SCRAPE_WEBHOOK_PATH", "scrape"),
         "youtube": os.getenv("N8N_YOUTUBE_SCRAPE_WEBHOOK_PATH", "youtube-scrape"),
+        "threads": os.getenv("N8N_THREADS_SCRAPE_WEBHOOK_PATH", "threads-scrape"),
     }
 
     def post(self, request):
-        niche = request.data.get("niche", "")
+        niche_param = request.data.get("niche", "")
         platform = request.data.get("platform", "tiktok").lower()
-        # Always include niche so n8n Build Scrape Config can filter pages
-        payload = {"niche": niche or "general", "platform": platform}
-
+        niches = [n.strip() for n in niche_param.split(',') if n.strip()]
+        if not niches:
+            niches = ["trending"]
         webhook_id = self.SCRAPE_WEBHOOK_IDS.get(platform, self.SCRAPE_WEBHOOK_IDS["tiktok"])
-        success = trigger_n8n_webhook(webhook_id, payload, timeout=180)
-
-        if not success:
-            return Response({"error": "Failed to trigger n8n scraping workflow"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-        return Response({"success": True, "message": f"{platform.title()} scraping workflow triggered successfully."})
+        overall_success = True
+        for niche in niches:
+            run = WorkflowRun.objects.create(platform=platform, niche=niche, status='running')
+            payload = {"niche": niche, "platform": platform, "run_id": run.id}
+            success = trigger_n8n_webhook(webhook_id, payload, timeout=120)
+            if not success:
+                overall_success = False
+        if overall_success:
+            return Response({"success": True, "message": f"Scraping triggered for {len(niches)} niches."}, status=status.HTTP_200_OK)
+        return Response({"success": False, "message": "Could not reach N8N workflow. Make sure N8N is running and the workflow is active."}, status=status.HTTP_200_OK)
 
 class GetLatestSessionView(APIView):
     """GET /api/n8n/sessions/latest/ - Get the user's latest session"""
@@ -402,8 +485,11 @@ class GetLatestSessionView(APIView):
     def get(self, request):
         qs = CreatorSession.objects.filter(creator_id=str(request.user.id))
         platform = request.query_params.get('platform')
+        niche = request.query_params.get('niche')
         if platform:
             qs = qs.filter(platform=platform.lower())
+        if niche:
+            qs = qs.filter(niche=niche)
         session = qs.order_by('-created_at').first()
         if not session:
             return Response({"session_id": None})
@@ -416,28 +502,33 @@ class ApproveScriptView(APIView):
 
     SCRIPT_APPROVE_WEBHOOK_ID = os.getenv("N8N_SCRIPT_APPROVE_WEBHOOK_ID", "0ec65146-238d-4c79-a441-25721e9373e7")
     SCRIPT_APPROVE_WEBHOOK_PATH = os.getenv("N8N_SCRIPT_APPROVE_WEBHOOK_PATH", "tiktok-script-approve")
+    INSTAGRAM_SCRIPT_APPROVE_PATH = os.getenv("N8N_INSTAGRAM_SCRIPT_APPROVE_PATH", "instagram-script-approve")
 
     def post(self, request):
         session_id = request.data.get("session_id")
         script_id = request.data.get("script_id")
         approved = request.data.get("approved", False)
         decision = "approve" if approved else "decline"
+        platform = request.data.get("platform", "tiktok").lower()
 
         session = CreatorSession.objects.filter(session_id=session_id).first()
-        
-        # Trigger n8n "🎯 Webhook: Script Approve/Decline"
-        # Node path: 0ec65146-238d-4c79-a441-25721e9373e7
-        success = trigger_n8n_webhook(self.SCRIPT_APPROVE_WEBHOOK_ID, {
+
+        payload = {
             "sessionId": session_id,
             "scriptId": script_id,
-            # Send both keys to support old/new n8n IF conditions.
             "decision": decision,
             "action": decision,
             "feedback": request.data.get("feedback", ""),
             "creatorId": str(request.user.id),
             "niche": session.niche if session else request.data.get("niche", ""),
             "selectedVideoId": session.selected_video_id if session else request.data.get("selected_video_id", ""),
-        }, fallback_ids=[self.SCRIPT_APPROVE_WEBHOOK_PATH])
+        }
+
+        if platform == "instagram":
+            success = trigger_n8n_webhook(self.INSTAGRAM_SCRIPT_APPROVE_PATH, payload)
+        else:
+            success = trigger_n8n_webhook(self.SCRIPT_APPROVE_WEBHOOK_ID, payload,
+                                          fallback_ids=[self.SCRIPT_APPROVE_WEBHOOK_PATH])
         
         if not success:
             return Response({"error": "Failed proxying to n8n"}, status=400)
@@ -904,13 +995,87 @@ class N8NCallbackView(APIView):
         action = request.data.get("action")
         session_id = request.data.get("session_id")
 
+        if action == "script_ready":
+            script_content = request.data.get("script_content", "")
+            script_id = request.data.get("script_id", "")
+            creator_id = str(request.data.get("creator_id", ""))
+
+            # Update the script row to pending_approval with content
+            if session_id:
+                update_fields = {"status": "pending_approval"}
+                if script_content:
+                    update_fields["script_content"] = script_content
+                if script_id:
+                    GeneratedScript.objects.filter(script_id=script_id).update(**update_fields)
+                else:
+                    GeneratedScript.objects.filter(session_id=session_id).update(**update_fields)
+
+            # Update the N8N-created session
+            CreatorSession.objects.filter(session_id=session_id).update(status="script_pending")
+
+            # N8N creates its own session_id — bridge to the Django-created session
+            # so Flutter's polling (which uses the Django session_id) works.
+            if creator_id:
+                django_session = (
+                    CreatorSession.objects
+                    .filter(creator_id=creator_id)
+                    .exclude(session_id=session_id)
+                    .order_by('-created_at')
+                    .first()
+                )
+                if django_session:
+                    django_session.status = "script_pending"
+                    django_session.save(update_fields=["status"])
+                    # Re-link the script to the Django session_id
+                    if script_id:
+                        GeneratedScript.objects.filter(script_id=script_id).update(
+                            session_id=django_session.session_id
+                        )
+                    elif session_id:
+                        GeneratedScript.objects.filter(
+                            session_id=session_id, status="pending_approval"
+                        ).update(session_id=django_session.session_id)
+
+            return Response({"status": "ok", "action": action})
+
         if action == "video_ready":
             video_id = request.data.get("video_id")
             video_url = request.data.get("video_url")
-            creator_id = request.data.get("creator_id")
+            creator_id = str(request.data.get("creator_id", ""))
 
-            # Update session status so Flutter polling picks it up
+            # Update the session that N8N reported
             CreatorSession.objects.filter(session_id=session_id).update(status="video_pending")
+
+            # Check if the video is already linked to this session (Instagram flow:
+            # N8N reuses the Django session_id, so no bridging is needed).
+            video_already_here = (
+                video_id and GeneratedVideo.objects.filter(
+                    video_id=video_id, session_id=session_id
+                ).exists()
+            ) or (
+                not video_id and GeneratedVideo.objects.filter(session_id=session_id).exists()
+            )
+
+            if not video_already_here and creator_id:
+                # TikTok flow: N8N uses a different session_id, bridge to Django session.
+                django_session = (
+                    CreatorSession.objects
+                    .filter(creator_id=creator_id)
+                    .exclude(session_id=session_id)
+                    .order_by('-created_at')
+                    .first()
+                )
+                if django_session:
+                    django_session.status = "video_pending"
+                    django_session.save(update_fields=["status"])
+                    if video_id:
+                        GeneratedVideo.objects.filter(video_id=video_id).update(
+                            session_id=django_session.session_id
+                        )
+                    elif session_id:
+                        GeneratedVideo.objects.filter(session_id=session_id).update(
+                            session_id=django_session.session_id
+                        )
 
             return Response({"status": "ok", "action": action})
 
@@ -1063,6 +1228,20 @@ class MixVideoView(APIView):
                 except Exception as ue:
                     print(f"Upload to {svc['name']} failed: {ue}")
 
+            # Save to generated_videos so Flutter polling finds it.
+            # Use the public URL (catbox) if upload succeeded; fall back to local_url.
+            new_video_id = f"ig_vid_{session_id}_{uuid.uuid4().hex[:8]}"
+            GeneratedVideo.objects.update_or_create(
+                session_id=session_id,
+                defaults={
+                    "video_id": new_video_id,
+                    "video_url": video_url,
+                    "status": "pending_approval",
+                    "creator_id": creator_id,
+                }
+            )
+            CreatorSession.objects.filter(session_id=session_id).update(status="video_pending")
+
             return Response({
                 "video_url": video_url,
                 "local_url": local_url,
@@ -1073,6 +1252,111 @@ class MixVideoView(APIView):
 
         except Exception as e:
             return Response({"error": f"Video mixing failed: {str(e)}"}, status=500)
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+class MergeVoiceoverView(APIView):
+    """
+    POST /api/n8n/merge-voiceover/
+    Called by n8n TikTok workflow to overlay a pre-generated TTS audio file onto
+    a generated/stock video. Both inputs are public URLs.
+    Body: { video_url, audio_url, session_id }
+    Header: X-N8N-Secret
+    Returns: { video_url }  — public URL of the merged MP4
+    """
+    permission_classes = []
+
+    def post(self, request):
+        import subprocess
+        import tempfile
+        import shutil
+        from pathlib import Path
+
+        expected_secret = os.getenv("N8N_CALLBACK_SECRET", "trendai-internal-n8n-secret-2026")
+        if request.headers.get("X-N8N-Secret", "") != expected_secret:
+            return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
+
+        video_url = request.data.get("video_url", "")
+        audio_url = request.data.get("audio_url", "")
+        session_id = request.data.get("session_id", "unknown")
+
+        if not video_url:
+            return Response({"error": "video_url is required"}, status=400)
+
+        if not audio_url:
+            return Response({"video_url": video_url})
+
+        tmpdir = tempfile.mkdtemp(prefix="trendai_vo_")
+        try:
+            video_path = os.path.join(tmpdir, "video.mp4")
+            audio_path = os.path.join(tmpdir, "audio.mp3")
+            output_path = os.path.join(tmpdir, "merged.mp4")
+
+            resp_v = requests.get(video_url, timeout=120, stream=True)
+            resp_v.raise_for_status()
+            with open(video_path, "wb") as f:
+                for chunk in resp_v.iter_content(chunk_size=8192):
+                    f.write(chunk)
+
+            resp_a = requests.get(audio_url, timeout=30, stream=True)
+            resp_a.raise_for_status()
+            with open(audio_path, "wb") as f:
+                for chunk in resp_a.iter_content(chunk_size=8192):
+                    f.write(chunk)
+
+            result = subprocess.run([
+                "ffmpeg", "-y",
+                "-i", video_path,
+                "-i", audio_path,
+                "-c:v", "copy",
+                "-c:a", "aac",
+                "-map", "0:v:0",
+                "-map", "1:a:0",
+                "-shortest",
+                output_path
+            ], capture_output=True, text=True, timeout=300)
+
+            if result.returncode != 0:
+                return Response({"video_url": video_url})
+
+            output_filename = f"tiktok_vo_{session_id}_{uuid.uuid4().hex[:8]}.mp4"
+
+            upload_services = [
+                {
+                    "name": "catbox.moe",
+                    "url": "https://catbox.moe/user/api.php",
+                    "data": {"reqtype": "fileupload"},
+                    "file_field": "fileToUpload",
+                },
+                {
+                    "name": "litterbox.catbox.moe",
+                    "url": "https://litterbox.catbox.moe/resources/serverside/llupload.php",
+                    "data": {"reqtype": "fileupload", "time": "72h"},
+                    "file_field": "fileToUpload",
+                },
+            ]
+
+            merged_url = video_url
+            for svc in upload_services:
+                try:
+                    with open(output_path, "rb") as f:
+                        up = requests.post(
+                            svc["url"],
+                            data=svc.get("data", {}),
+                            files={svc["file_field"]: (output_filename, f, "video/mp4")},
+                            timeout=180,
+                        )
+                        if up.status_code == 200 and up.text.strip().startswith("http"):
+                            merged_url = up.text.strip()
+                            break
+                except Exception:
+                    continue
+
+            return Response({"video_url": merged_url})
+
+        except Exception as e:
+            return Response({"video_url": video_url})
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
 

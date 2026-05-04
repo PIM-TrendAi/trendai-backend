@@ -2,6 +2,7 @@ from django.urls import path
 from .views import (
     TrendingVideoListView,
     FacebookReelsListView,
+    InstagramReelListView,
     SessionStatusView,
     StartWorkflowView,
     GetLatestSessionView,
@@ -17,12 +18,14 @@ from .views import (
     PlatformCallbackView,
     N8NCallbackView,
     MixVideoView,
+    MergeVoiceoverView,
     RecommendationsView,
 )
 
 urlpatterns = [
     path('trending_videos/', TrendingVideoListView.as_view(), name='trending-videos-list'),
     path('facebook_reels/', FacebookReelsListView.as_view(), name='facebook-reels-list'),
+    path('instagram-reels/', InstagramReelListView.as_view(), name='instagram-reels-list'),
     path('sessions/latest/', GetLatestSessionView.as_view(), name='get-latest-session'),
     path('sessions/<str:session_id>/', SessionStatusView.as_view(), name='get-session-status'),
     path('start/', StartWorkflowView.as_view(), name='start-workflow'),
@@ -39,5 +42,6 @@ urlpatterns = [
     path('platforms/<str:platform>/callback/', PlatformCallbackView.as_view(), name='platform-callback'),
     path('callback/', N8NCallbackView.as_view(), name='n8n-callback'),
     path('mix-video/', MixVideoView.as_view(), name='mix-video'),
+    path('merge-voiceover/', MergeVoiceoverView.as_view(), name='merge-voiceover'),
     path('recommendations/', RecommendationsView.as_view(), name='recommendations'),
 ]

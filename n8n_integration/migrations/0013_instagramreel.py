@@ -1,0 +1,32 @@
+from django.db import migrations, models
+
+
+class Migration(migrations.Migration):
+
+    dependencies = [
+        ('n8n_integration', '0012_workflowrun'),
+    ]
+
+    operations = [
+        migrations.CreateModel(
+            name='InstagramReel',
+            fields=[
+                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
+                ('reel_id', models.TextField(unique=True)),
+                ('reel_url', models.TextField(blank=True, null=True)),
+                ('thumbnail_url', models.TextField(blank=True, null=True)),
+                ('caption', models.TextField(blank=True, null=True)),
+                ('author', models.TextField(blank=True, null=True)),
+                ('views', models.BigIntegerField(default=0)),
+                ('likes', models.BigIntegerField(default=0)),
+                ('niche', models.TextField(blank=True, null=True)),
+                ('hashtags', models.TextField(blank=True, null=True)),
+                ('scraped_at', models.DateTimeField(blank=True, null=True)),
+            ],
+            options={
+                'db_table': 'instagram_reels',
+                'ordering': ['-scraped_at', '-views'],
+                'managed': False,
+            },
+        ),
+    ]

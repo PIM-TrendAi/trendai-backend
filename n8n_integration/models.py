@@ -2,6 +2,43 @@ from django.db import models
 from django.conf import settings
 import uuid
 
+class WorkflowRun(models.Model):
+    """Tracks a single execution of a scraping workflow"""
+    id = models.BigAutoField(primary_key=True)
+    platform = models.CharField(max_length=50, default='tiktok')
+    niche = models.CharField(max_length=255, blank=True, null=True)
+    status = models.CharField(max_length=50, default='running')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "workflow_runs"
+
+    def __str__(self):
+        return f"Run {self.id} - {self.platform} ({self.niche})"
+
+
+class InstagramReel(models.Model):
+    """Instagram Reels scraped by n8n — unmanaged, n8n owns the schema."""
+    reel_id = models.TextField(unique=True)
+    reel_url = models.TextField(blank=True, null=True)
+    thumbnail_url = models.TextField(blank=True, null=True)
+    caption = models.TextField(blank=True, null=True)
+    author = models.TextField(blank=True, null=True)
+    views = models.BigIntegerField(default=0)
+    likes = models.BigIntegerField(default=0)
+    niche = models.TextField(blank=True, null=True)
+    hashtags = models.TextField(blank=True, null=True)
+    scraped_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        managed = False
+        db_table = "instagram_reels"
+        ordering = ['-scraped_at', '-views']
+
+    def __str__(self):
+        return f"{self.niche} - {self.reel_id}"
+
+
 class TrendingVideo(models.Model):
     """Stores trending TikTok videos scraped by n8n daily (9AM trigger)"""
     id = models.BigAutoField(primary_key=True)

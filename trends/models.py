@@ -123,3 +123,31 @@ class YouTubeVideo(models.Model):
 
     def __str__(self):
         return f"{self.niche} - {self.titre}"
+
+class ThreadsPost(models.Model):
+    """
+    Maps to the threads_posts table populated by the N8N Threads scraping workflow.
+    managed=False: Django won't touch the schema — N8N/SQL migration handles it.
+    """
+    post_id = models.TextField(unique=True)
+    post_url = models.TextField(null=True, blank=True)
+    profile_url = models.TextField(null=True, blank=True)
+    username = models.TextField(null=True, blank=True)
+    text = models.TextField(null=True, blank=True)
+    created_at = models.DateTimeField(null=True, blank=True)
+    like_count = models.IntegerField(default=0)
+    reply_count = models.IntegerField(default=0)
+    repost_count = models.IntegerField(default=0)
+    has_video = models.BooleanField(default=False)
+    video_url = models.TextField(null=True, blank=True)
+    thumbnail_url = models.TextField(null=True, blank=True)
+    niche = models.TextField(null=True, blank=True)
+    status = models.TextField(default='scraped')
+
+    class Meta:
+        managed = False
+        db_table = "threads_posts"
+        ordering = ["-like_count"]
+
+    def __str__(self):
+        return f"{self.niche} - {self.post_id}"

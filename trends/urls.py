@@ -3,6 +3,7 @@ from .views import (
     TrendListView, TrendDetailView, SaveTrendView, SavedTrendListView,
     FacebookReelListView, FacebookScrapeTriggerView,
     YouTubeVideoListView, YouTubeScrapeTriggerView,
+    ThreadsPostListView, ThreadsScrapeTriggerView
 )
 
 urlpatterns = [
@@ -16,4 +17,7 @@ urlpatterns = [
     # YouTube Videos (populated by N8N scraping workflow)
     path("youtube-videos/", YouTubeVideoListView.as_view(), name="youtube-videos"),
     path("youtube-scrape/", YouTubeScrapeTriggerView.as_view(), name="youtube-scrape"),
+    # Threads Posts (populated by N8N scraping workflow)
+    path("threads-posts/", ThreadsPostListView.as_view(), name="threads-posts"),
+    path("threads-scrape/", ThreadsScrapeTriggerView.as_view(), name="threads-scrape"),
 ]
