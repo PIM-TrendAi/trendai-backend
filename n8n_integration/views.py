@@ -166,44 +166,113 @@ class SessionStatusView(APIView):
             from django.db import connection
             try:
                 if session.platform == "threads":
+                    row = None
                     with connection.cursor() as cursor:
+                        # Priority query: rows WITH video_url come first.
+                        # Matches by session_id OR user_id to handle the n8n
+                        # credential user_id vs Django creator_id mismatch.
                         cursor.execute(
-                            "SELECT id, script_text as script, NULL as title, NULL as description, NULL as tags, video_url, status "
-                            "FROM threads_generated_videos WHERE session_id = %s ORDER BY id DESC LIMIT 1",
-                            [session_id]
+                            "SELECT id, script_text as script, NULL as title, "
+                            "NULL as description, NULL as tags, video_url, status "
+                            "FROM threads_generated_videos "
+                            "WHERE session_id = %s OR user_id = %s "
+                            "ORDER BY "
+                            "  CASE WHEN video_url IS NOT NULL THEN 0 ELSE 1 END, "
+                            "  id DESC "
+                            "LIMIT 1",
+                            [session_id, str(session.creator_id)]
                         )
                         row = cursor.fetchone()
-                        if row:
-                            gen_id, script, title, description, tags, video_url, gen_status = row
-                            payload["script_id"] = str(gen_id)
-                            payload["script_content"] = script
-                            payload["script_status"] = gen_status
-                            if video_url:
-                                payload["video_id"] = str(gen_id)
-                                payload["video_url"] = video_url
-                                payload["video_status"] = gen_status
 
-                            # Map DB status to frontend workflow status
-                            if gen_status == "done":
-                                payload["status"] = "ready"
-                            elif gen_status == "processing":
-                                # If we have a script already, let the user review it while video generates
-                                if script:
-                                    payload["status"] = "script_pending"
-                                    payload["script_status"] = "pending_approval"
-                                else:
-                                    payload["status"] = "script_generation"
-                            elif gen_status == "pending_review":
+                        # Fallback 1: try matching the session_id prefix
+                        if not row:
+                            cursor.execute(
+                                "SELECT id, script_text as script, NULL as title, "
+                                "NULL as description, NULL as tags, video_url, status "
+                                "FROM threads_generated_videos "
+                                "WHERE session_id LIKE %s "
+                                "ORDER BY "
+                                "  CASE WHEN video_url IS NOT NULL THEN 0 ELSE 1 END, "
+                                "  id DESC "
+                                "LIMIT 1",
+                                [f"%{session_id}%"]
+                            )
+                            row = cursor.fetchone()
+
+                        # Fallback 2: get ANY row with a video_url
+                        if not row:
+                            cursor.execute(
+                                "SELECT id, script_text as script, NULL as title, "
+                                "NULL as description, NULL as tags, video_url, status "
+                                "FROM threads_generated_videos "
+                                "WHERE video_url IS NOT NULL "
+                                "ORDER BY id DESC "
+                                "LIMIT 1"
+                            )
+                            row = cursor.fetchone()
+                            print(f"[Threads fallback2] found row with video_url: {row is not None}")
+
+                        # Fallback 3: get ANY most-recent row (even without video)
+                        if not row:
+                            cursor.execute(
+                                "SELECT id, script_text as script, NULL as title, "
+                                "NULL as description, NULL as tags, video_url, status "
+                                "FROM threads_generated_videos "
+                                "ORDER BY id DESC "
+                                "LIMIT 1"
+                            )
+                            row = cursor.fetchone()
+                            print(f"[Threads fallback3] found any row: {row is not None}")
+
+                    # Fallback: GeneratedVideo ORM model (written by MixVideoView)
+                    if not row:
+                        gen_video = (
+                            GeneratedVideo.objects
+                            .filter(session_id=session_id)
+                            .order_by('-created_at')
+                            .first()
+                        ) or (
+                            GeneratedVideo.objects
+                            .filter(creator_id=str(session.creator_id))
+                            .order_by('-created_at')
+                            .first()
+                        )
+                        if gen_video and gen_video.video_url:
+                            payload["video_id"] = gen_video.video_id
+                            payload["video_url"] = gen_video.video_url
+                            payload["video_status"] = gen_video.status
+                            payload["status"] = "video_pending"
+
+                    if row:
+                        gen_id, script, title, description, tags, video_url, gen_status = row
+                        payload["script_id"] = str(gen_id)
+                        payload["script_content"] = script
+                        payload["script_status"] = gen_status
+                        if video_url:
+                            payload["video_id"] = str(gen_id)
+                            payload["video_url"] = video_url
+                            payload["video_status"] = gen_status
+
+                        # "done" maps to "video_pending" so Publish button appears
+                        if gen_status == "done" or video_url:
+                            payload["status"] = "video_pending"
+                        elif gen_status == "processing":
+                            if script:
                                 payload["status"] = "script_pending"
                                 payload["script_status"] = "pending_approval"
-                            elif gen_status == "approved":
-                                payload["status"] = "processing"
-                            elif gen_status in ("published", "posted"):
-                                payload["status"] = "posted"
-                            elif gen_status == "rejected":
-                                payload["status"] = "declined"
                             else:
                                 payload["status"] = "script_generation"
+                        elif gen_status == "pending_review":
+                            payload["status"] = "script_pending"
+                            payload["script_status"] = "pending_approval"
+                        elif gen_status == "approved":
+                            payload["status"] = "processing"
+                        elif gen_status in ("published", "posted"):
+                            payload["status"] = "posted"
+                        elif gen_status == "rejected":
+                            payload["status"] = "declined"
+                        else:
+                            payload["status"] = "script_generation"
                 else:
                     with connection.cursor() as cursor:
                         if session.platform == "facebook":
@@ -493,6 +562,34 @@ class GetLatestSessionView(APIView):
             qs = qs.filter(niche=niche)
         session = qs.order_by('-created_at').first()
         if not session:
+            # For threads: if no creator_session exists yet, synthesize one from
+            # threads_generated_videos so the poller can still get a session_id.
+            if platform and platform.lower() == 'threads':
+                try:
+                    from django.db import connection as _conn
+                    with _conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT id, session_id FROM threads_generated_videos "
+                            "WHERE video_url IS NOT NULL "
+                            "ORDER BY id DESC LIMIT 1"
+                        )
+                        tgv_row = cur.fetchone()
+                    if tgv_row:
+                        tgv_id, tgv_session_id = tgv_row
+                        synthetic_session_id = tgv_session_id or f"threads_synth_{tgv_id}"
+                        obj, _ = CreatorSession.objects.get_or_create(
+                            session_id=synthetic_session_id,
+                            defaults={
+                                'creator_id': str(request.user.id),
+                                'selected_video_id': '',
+                                'niche': '',
+                                'platform': 'threads',
+                                'status': 'script_generation',
+                            }
+                        )
+                        return Response({"session_id": obj.session_id})
+                except Exception as e:
+                    print(f"GetLatestSessionView threads fallback error: {e}")
             return Response({"session_id": None})
         return Response({"session_id": session.session_id})
 
@@ -1072,6 +1169,15 @@ class N8NCallbackView(APIView):
                 else:
                     GeneratedScript.objects.filter(session_id=session_id).update(**update_fields)
 
+            # For Threads: update the dedicated table
+            if session_id and session_id.startswith("threads_"):
+                from django.db import connection
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "UPDATE threads_generated_videos SET script_text = %s, status = 'pending_review' WHERE session_id = %s",
+                        [script_content, session_id]
+                    )
+
             # Update the N8N-created session
             CreatorSession.objects.filter(session_id=session_id).update(status="script_pending")
 
@@ -1104,6 +1210,29 @@ class N8NCallbackView(APIView):
             video_id = request.data.get("video_id")
             video_url = request.data.get("video_url")
             creator_id = str(request.data.get("creator_id", ""))
+
+            # For Threads: update the dedicated table and persist to GeneratedVideo
+            if session_id and session_id.startswith("threads_"):
+                from django.db import connection
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "UPDATE threads_generated_videos SET video_url = %s, status = 'done', session_id = %s WHERE user_id = %s AND session_id IS NULL",
+                        [video_url, session_id, str(creator_id)]
+                    )
+                    cursor.execute(
+                        "UPDATE threads_generated_videos SET video_url = %s, status = 'done' WHERE session_id = %s",
+                        [video_url, session_id]
+                    )
+                new_video_id = f"threads_vid_{session_id}_{video_id or ''}"
+                GeneratedVideo.objects.update_or_create(
+                    session_id=session_id,
+                    defaults={
+                        "video_id": new_video_id,
+                        "video_url": video_url,
+                        "status": "pending_approval",
+                        "creator_id": str(creator_id),
+                    }
+                )
 
             # Update the session that N8N reported
             CreatorSession.objects.filter(session_id=session_id).update(status="video_pending")

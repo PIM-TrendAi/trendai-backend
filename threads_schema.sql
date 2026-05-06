@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS threads_generated_videos (
   id SERIAL PRIMARY KEY,
   post_id TEXT,
   user_id TEXT,
+  session_id TEXT,
   niche TEXT,
   user_prompt TEXT,
   script TEXT,

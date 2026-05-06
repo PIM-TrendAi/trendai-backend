@@ -1,0 +1,736 @@
+{
+  "name": "Threads Engine - FINAL FIX - n8n",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "threads-scrape",
+        "options": {}
+      },
+      "id": "c5af3380-8a2d-42a1-bca8-bb1df7964350",
+      "name": "Webhook Trigger: Scrape",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "threads-scrape-webhook-001"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "threads-generate",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "9de64ea1-642e-4c80-bcd9-8b077cff3997",
+      "name": "Webhook Trigger: Generate",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        656
+      ],
+      "webhookId": "threads-generate-webhook-001"
+    },
+    {
+      "parameters": {},
+      "id": "b0a44b0c-42da-46d2-8552-95b89fe3302f",
+      "name": "Error Handler",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const err = $input.first().json;\nconsole.error('Threads workflow failed:', JSON.stringify(err));\nreturn [{ json: { error: true, message: err.message || 'Unknown error', workflow: 'threads-scraping', timestamp: new Date().toISOString() } }];"
+      },
+      "id": "c82d95fe-6c5c-4653-8fa6-0d878ae60fb9",
+      "name": "Log Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "Run actor and get dataset",
+        "actorId": {
+          "__rl": true,
+          "value": "apify~threads-scraper",
+          "mode": "list",
+          "cachedResultName": "Threads Scraper (apify/threads-scraper)"
+        },
+        "customBody": "={{ \nJSON.stringify({\n  startUrls: $json.body.profiles || [\n    // Tech\n    { url: \"https://www.threads.net/@techcrunch\" },\n    { url: \"https://www.threads.net/@theverge\" },\n    { url: \"https://www.threads.net/@wired\" },\n    { url: \"https://www.threads.net/@mkbhd\" },\n    // Cuisine / Food\n    { url: \"https://www.threads.net/@tasty\" },\n    { url: \"https://www.threads.net/@foodnetwork\" },\n    { url: \"https://www.threads.net/@bonappetitmag\" },\n    { url: \"https://www.threads.net/@tastemade\" },\n    // Lifestyle\n    { url: \"https://www.threads.net/@oprah\" },\n    { url: \"https://www.threads.net/@jayshetty\" },\n    { url: \"https://www.threads.net/@mindbodygreen\" },\n    // Funny\n    { url: \"https://www.threads.net/@9gag\" },\n    { url: \"https://www.threads.net/@ladbible\" },\n    { url: \"https://www.threads.net/@unilad\" },\n    // Sport\n    { url: \"https://www.threads.net/@espn\" },\n    { url: \"https://www.threads.net/@bleacherreport\" },\n    { url: \"https://www.threads.net/@goal\" },\n    // News\n    { url: \"https://www.threads.net/@bbcnews\" },\n    { url: \"https://www.threads.net/@cnn\" },\n    { url: \"https://www.threads.net/@aljazeera\" },\n    // Travel\n    { url: \"https://www.threads.net/@lonelyplanet\" },\n    { url: \"https://www.threads.net/@natgeotravel\" },\n    { url: \"https://www.threads.net/@beautifuldestinations\" },\n    // Business / Motivation\n    { url: \"https://www.threads.net/@garyvee\" },\n    { url: \"https://www.threads.net/@tonyrobbins\" },\n    { url: \"https://www.threads.net/@goalcast\" },\n    // Fashion\n    { url: \"https://www.threads.net/@vogue\" },\n    { url: \"https://www.threads.net/@hm\" },\n    // Tunisia / Arab region\n    { url: \"https://www.threads.net/@mosaiquefm\" }\n  ],\n  maxPostsPerProfile: $json.body.results_limit || 20,\n  proxyConfiguration: { useApifyProxy: true }\n})\n}}"
+      },
+      "type": "@apify/n8n-nodes-apify.apify",
+      "typeVersion": 1,
+      "position": [
+        224,
+        0
+      ],
+      "id": "ef0c96d6-47ef-4271-9f6d-79a6d689ecbc",
+      "name": "Run Apify: Threads Scraper",
+      "credentials": {
+        "apifyApi": {
+          "id": "jnhCwj0OnwNixeKS",
+          "name": "Apify account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const nicheFromWebhook = $('Webhook Trigger: Scrape').item.json.body?.niche || 'general';\n\nreturn items.map(item => {\n  const post = item.json;\n\n  // Threads post ID\n  const postId =\n    post.id ||\n    post.post_id ||\n    (post.url || '').match(/\\/post\\/([A-Za-z0-9_-]+)/)?.[1] ||\n    null;\n\n  if (!postId) return null;\n\n  const postUrl = post.url || post.permalink || null;\n  const profileUrl = post.ownerProfileUrl || post.profile_url || null;\n\n  const text = (\n    post.text ||\n    post.caption ||\n    post.content ||\n    ''\n  ).substring(0, 2000);\n\n  const createdAt = post.timestamp || post.created_at || new Date().toISOString();\n\n  function parseCount(v) {\n    if (v == null) return 0;\n    if (typeof v === 'number') return v;\n    const s = String(v).toUpperCase().trim();\n    if (s.includes('M')) return parseFloat(s) * 1_000_000;\n    if (s.includes('K')) return parseFloat(s) * 1_000;\n    const n = parseInt(s.replace(/[^0-9]/g, ''));\n    return isNaN(n) ? 0 : n;\n  }\n\n  const likeCount = parseCount(post.likeCount || post.like_count || 0);\n  const replyCount = parseCount(post.replyCount || post.reply_count || 0);\n  const repostCount = parseCount(post.repostCount || post.repost_count || 0);\n\n  // Detect media type and URLs\n  const hasVideo = !!(post.videoUrl || post.video_url || (post.media_type === 'video'));\n  const videoUrl = post.videoUrl || post.video_url || null;\n  const thumbnailUrl = post.thumbnailUrl || post.thumbnail_url || post.displayUrl || null;\n\n  return {\n    json: {\n      post_id:       String(postId),\n      post_url:      postUrl,\n      profile_url:   profileUrl,\n      username:      post.ownerUsername || post.username || '',\n      text:          text,\n      created_at:    createdAt,\n      like_count:    likeCount,\n      reply_count:   replyCount,\n      repost_count:  repostCount,\n      has_video:     hasVideo,\n      video_url:     videoUrl,\n      thumbnail_url: thumbnailUrl,\n      niche:         nicheFromWebhook,\n      status:        'scraped'\n    }\n  };\n}).filter(Boolean);"
+      },
+      "id": "fb946b24-c584-40ca-aa1f-3c9c1f22c656",
+      "name": "Extract & Enrich Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO threads_posts (post_id, post_url, profile_url, username, text, created_at, like_count, reply_count, repost_count, has_video, video_url, thumbnail_url, niche, status)\nVALUES (\n  '{{ $json.post_id }}',\n  {{ $json.post_url ? \"'\" + $json.post_url.replace(/'/g, \"''\") + \"'\" : 'NULL' }},\n  {{ $json.profile_url ? \"'\" + $json.profile_url.replace(/'/g, \"''\") + \"'\" : 'NULL' }},\n  '{{ ($json.username || '').replace(/'/g, \"''\") }}',\n  '{{ ($json.text || '').replace(/'/g, \"''\") }}',\n  '{{ $json.created_at || new Date().toISOString() }}',\n  {{ $json.like_count || 0 }},\n  {{ $json.reply_count || 0 }},\n  {{ $json.repost_count || 0 }},\n  {{ $json.has_video ? 'true' : 'false' }},\n  {{ $json.video_url ? \"'\" + $json.video_url.replace(/'/g, \"''\") + \"'\" : 'NULL' }},\n  {{ $json.thumbnail_url ? \"'\" + $json.thumbnail_url.replace(/'/g, \"''\") + \"'\" : 'NULL' }},\n  '{{ $json.niche || 'general' }}',\n  'scraped'\n)\nON CONFLICT (post_id) DO UPDATE SET\n  like_count = EXCLUDED.like_count,\n  reply_count = EXCLUDED.reply_count,\n  repost_count = EXCLUDED.repost_count,\n  thumbnail_url = EXCLUDED.thumbnail_url,\n  text = EXCLUDED.text,\n  niche = EXCLUDED.niche;",
+        "options": {}
+      },
+      "id": "ed68364f-172e-43e6-8c78-ac14fc67a1ad",
+      "name": "Upsert Post (No Duplicates)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        672,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "eiV6Y48xwK3oUJgZ",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM threads_posts WHERE post_id = '{{ $json.body.post_id }}' LIMIT 1;",
+        "options": {}
+      },
+      "id": "35d4ed0d-3297-4c66-8f03-43072050759c",
+      "name": "Fetch Post from DB",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        224,
+        656
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "eiV6Y48xwK3oUJgZ",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const webhookData = $('Webhook Trigger: Generate').item.json.body;\nconst postData = $input.first().json;\nreturn [{ json: {\n  post_id:     postData.post_id,\n  post_text:   postData.text || '',\n  like_count:  postData.like_count || 0,\n  reply_count: postData.reply_count || 0,\n  repost_count: postData.repost_count || 0,\n  has_video:   postData.has_video || false,\n  niche:       webhookData.niche || postData.niche || 'general',\n  user_id:     webhookData.user_id || 'anonymous',\n  user_prompt: webhookData.prompt || ''\n}}];"
+      },
+      "id": "924e46dc-ba41-450e-a96b-3f5d7f604ce5",
+      "name": "Merge Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        656
+      ]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "models/gemma-3n-e4b-it",
+          "mode": "list",
+          "cachedResultName": "models/gemma-3n-e4b-it"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "=Tu es un syst\u00e8me de classification de contenu.\n\nAnalyse ce post Threads :\nTexte : {{ $json.post_text }}\nNiche sugg\u00e9r\u00e9e : {{ $json.niche }}\n\nClassifie dans UNE SEULE niche parmi :\ntech | cuisine | lifestyle | funny | sport | news | travel | fashion | business | motivation\n\nR\u00e9ponds uniquement par un seul mot en minuscules. Rien d'autre."
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "id": "daa7b11c-8990-48b7-b0eb-7a4ac5b83c56",
+      "name": "Classify Niche (Gemini Flash)",
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1.1,
+      "position": [
+        672,
+        656
+      ],
+      "credentials": {
+        "googlePalmApi": {
+          "id": "0Xab0E5kYbaE6l8D",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const ctx = $('Merge Context').item.json;\nconst text = $input.first().json.candidates?.[0]?.content?.parts?.[0]?.text?.trim().toLowerCase() || ctx.niche;\nconst valid = ['tech','cuisine','lifestyle','funny','sport','news','travel','fashion','business','motivation','general'];\nreturn [{ json: { ...ctx, niche: valid.includes(text) ? text : ctx.niche } }];"
+      },
+      "id": "a9558204-eeec-4143-b4ad-31bbd483cfcd",
+      "name": "Resolve Final Niche",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        896,
+        656
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// BUILD AI PROMPT \u2014 Threads Script + Video Prompt\n// Uses Groq (llama-3.3-70b-versatile) \u2014 niche-aware & dynamic\n// Threads Algorithm: Reposts > Replies > Likes > Watch Completion\n// ============================================================\n\nconst data = $input.first().json;\n\nconst postText    = data.post_text    || '';\nconst postLikes   = data.like_count   || 0;\nconst postReplies = data.reply_count  || 0;\nconst postReposts = data.repost_count || 0;\nconst postNiche   = data.niche        || 'general';\nconst userAngle   = data.user_prompt  || '';\n\nconst postContext = postText\n  ? 'Caption: \"' + postText + '\"\\nLikes: ' + postLikes + ' | Replies: ' + postReplies + ' | Reposts: ' + postReposts + '\\nDetected Niche: ' + postNiche\n  : 'Post ID: ' + (data.post_id || 'N/A') + '\\nLikes: ' + postLikes + '\\nDetected Niche: ' + postNiche;\n\n// \u2500\u2500 NICHE-SPECIFIC SCRIPT GUIDELINES \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nconst nicheGuide = {\n  funny: {\n    hook_style: 'absurd opener ou plot twist \u2014 fait rire en 2 sec',\n    body_style: 'escalade comique rapide, situation relatable, punch final inattendu',\n    cta_style:  'Tague quelqu\\'un qui fait \u00e7a / Partage si tu te reconnais',\n    tone: 'playful, exag\u00e9r\u00e9, autod\u00e9rision'\n  },\n  cuisine: {\n    hook_style: 'reveal app\u00e9tissant ou fact food choquant',\n    body_style: '\u00e9tapes claires, langage sensoriel (croustillant, fondu, dor\u00e9)',\n    cta_style:  'Sauvegarde cette recette / Commente ta version',\n    tone: 'chaleureux, app\u00e9tissant, instructionnel et casual'\n  },\n  tech: {\n    hook_style: 'claim fort sur un outil ou shortcut que personne conna\u00eet',\n    body_style: 'demo step-by-step, contraste avant/apr\u00e8s, temps ou argent \u00e9conomis\u00e9',\n    cta_style:  'Sauvegarde pour plus tard / Partage avec quelqu\\'un qui a besoin',\n    tone: 'autoritaire mais accessible, rythme rapide'\n  },\n  lifestyle: {\n    hook_style: 'statement aspirationnel ou moment de routine relatable',\n    body_style: 'tip personnel ou mindset shift avec application r\u00e9elle',\n    cta_style:  'Partage avec quelqu\\'un qui a besoin de \u00e7a / Commente comment tu le fais',\n    tone: 'authentique, chaleureux, motivant'\n  },\n  sport: {\n    hook_style: 'stat impressionnante, d\u00e9fi, ou secret d\\'entra\u00eenement',\n    body_style: 'breakdown de drill ou technique, r\u00e9sultats mesurables, langage intensif',\n    cta_style:  'Essaie \u00e7a aujourd\\'hui / Tague ton partenaire d\\'entra\u00eenement',\n    tone: 'haute \u00e9nergie, motivationnel, concis'\n  },\n  news: {\n    hook_style: 'reveal breaking ou format \"\u00e7a vient de se passer\" urgence',\n    body_style: 'r\u00e9sum\u00e9 3 points clairs, angle local (Tunisie/monde arabe), pourquoi \u00e7a compte',\n    cta_style:  'Partage avant qu\\'ils suppriment / Commente ta r\u00e9action',\n    tone: 's\u00e9rieux, fiable, punchy'\n  },\n  travel: {\n    hook_style: 'reveal d\\'un endroit cach\u00e9 ou opener \"arr\u00eate de dormir sur ce lieu\"',\n    body_style: 'mise en sc\u00e8ne sensorielle, tips pratiques (co\u00fbt, meilleure p\u00e9riode, comment y aller)',\n    cta_style:  'Sauvegarde pour ton prochain voyage / Partage avec qui tu veux emmener',\n    tone: 'wanderlust, cin\u00e9matique, inspirant'\n  },\n  fashion: {\n    hook_style: 'reveal de style inattendu ou combo qui surprend',\n    body_style: 'breakdown de la tenue avec pi\u00e8ces key, budget ou dupe accessible',\n    cta_style:  'Sauvegarde pour ton prochain outfit / Tague ton ami styl\u00e9',\n    tone: 'chic, confident, accessible'\n  },\n  business: {\n    hook_style: 'fact contre-intuitif sur le business ou r\u00e9v\u00e9lation choc sur l\\'argent',\n    body_style: '3 \u00e9tapes actionnables, exemple concret, r\u00e9sultat mesurable',\n    cta_style:  'Partage avec quelqu\\'un qui construit / Sauvegarde et applique',\n    tone: 'autoritaire, direct, ambitieux'\n  },\n  motivation: {\n    hook_style: 'v\u00e9rit\u00e9 universelle qui fait mal ou question qui intrigue',\n    body_style: 'histoire courte + le\u00e7on + application \u00e0 la vie r\u00e9elle',\n    cta_style:  'Partage si \u00e7a t\\'a touch\u00e9 / Commente ton exp\u00e9rience',\n    tone: 'inspirant, sinc\u00e8re, puissant'\n  },\n  general: {\n    hook_style: 'curiosity gap ou v\u00e9rit\u00e9 universelle forte',\n    body_style: 'contenu value-driven avec transformation ou insight clair',\n    cta_style:  'Partage si tu es d\\'accord / Commente ton exp\u00e9rience',\n    tone: 'authentique, engageant, universel'\n  }\n};\n\nconst guide = nicheGuide[postNiche] || nicheGuide['general'];\n\n// \u2500\u2500 SYSTEM PROMPT \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nconst systemPrompt =\n  'You are a dual expert: a Threads viral scriptwriter AND a professional AI video prompt engineer.\\n'\n  + 'You deeply understand the Threads algorithm (Meta) and write scripts that trigger real engagement.\\n\\n'\n\n  + '\u2501\u2501\u2501 THREADS ALGORITHM \u2014 RANKED SIGNALS \u2501\u2501\u2501\\n'\n  + '1. REPOSTS (#1 signal) \u2014 content must trigger the \"repost to my followers\" reflex\\n'\n  + '2. REPLIES \u2014 end with a question or controversial take to boost reach\\n'\n  + '3. LIKES \u2014 emotional resonance or useful insight drives likes\\n'\n  + '4. WATCH COMPLETION \u2014 for video: hook in first 1-2 sec or they scroll\\n\\n'\n\n  + '\u2501\u2501\u2501 ACTIVE NICHE: ' + postNiche.toUpperCase() + ' \u2501\u2501\u2501\\n'\n  + 'Hook style  : ' + guide.hook_style + '\\n'\n  + 'Body style  : ' + guide.body_style + '\\n'\n  + 'CTA style   : ' + guide.cta_style  + '\\n'\n  + 'Tone        : ' + guide.tone       + '\\n\\n'\n\n  + '\u2501\u2501\u2501 VIRAL HOOK FORMULAS (THREADS) \u2501\u2501\u2501\\n'\n  + '- Pattern interrupt : \"La vraie raison pourquoi X...\" \u2014 stops the scroll\\n'\n  + '- Curiosity gap     : \"Ce que personne ne te dit sur X\"\\n'\n  + '- Specific number   : \"3 choses que j\\'ai test\u00e9es pendant 7 jours\"\\n'\n  + '- Relatable trap    : \"POV: tu fais X et soudain...\" \u2014 repost\u00e9 par des milliers\\n'\n  + '- Local truth       : moment hyper-sp\u00e9cifique Tunisie/monde arabe \u2014 max partages communautaires\\n'\n  + '- Debate bomb       : opinion polarisante \u2014 section replies explose\\n\\n'\n\n  + '\u2501\u2501\u2501 SCRIPT RULES \u2501\u2501\u2501\\n'\n  + '1. Hook must stop the scroll in FIRST 1-2 seconds\\n'\n  + '2. Body delivers REAL value \u2014 no fluff, short punchy sentences\\n'\n  + '3. Every sentence max 10 words \u2014 Threads est consomm\u00e9 sur mobile\\n'\n  + '4. CTA drives REPOSTS or REPLIES, not just follows\\n\\n'\n\n  + '\u2501\u2501\u2501 VIDEO PROMPT RULES (9:16 \u00b7 5-15 seconds) \u2501\u2501\u2501\\n'\n  + '1. Choose visual style matching THIS niche (cinematic, motion graphic, hyperrealistic, etc.)\\n'\n  + '2. Describe 3 beats: second 1 / seconds 2-12 / final second\\n'\n  + '3. Specify: shot type, subject, action, color palette, lighting, background\\n'\n  + '4. Nothing vague \u2014 every word helps the AI video generator\\n\\n'\n\n  + 'Return ONLY valid JSON \u2014 no markdown, no explanation:\\n'\n  + '{\\n'\n  + '  \"title\"          : \"Catchy title for Tunisian/Arab market (Arabic, French, or Darija)\",\\n'\n  + '  \"hook\"           : \"First 1-2 seconds on screen \u2014 pattern interrupt or curiosity gap. Max 10 words.\",\\n'\n  + '  \"body\"           : \"Main content 10-30 seconds \u2014 real value, short punchy sentences, niche-specific.\",\\n'\n  + '  \"cta\"            : \"Last 3-5 seconds \u2014 one clear action that drives REPOSTS or REPLIES\",\\n'\n  + '  \"hook_text\"      : \"On-screen text overlay (same as hook). Max 8 words.\",\\n'\n  + '  \"video_prompt\"   : \"4-sentence AI video prompt. S1: shot type + visual style + 9:16. S2: subject + action at second 1. S3: motion/color/lighting seconds 2-12. S4: payoff at final second + background.\",\\n'\n  + '  \"negative_prompt\": \"Elements to exclude based on chosen style. Always include: text overlay, watermark, distorted faces, grainy, low resolution.\",\\n'\n  + '  \"caption\"        : \"Threads caption \u2014 starts with hook, 2-3 lines of value, ends with a question. French/Arabic/Darija.\",\\n'\n  + '  \"hashtags\"       : [\"#Tunisia\", \"#Threads\", \"#' + postNiche + '\", \"#trending\", \"#viral\"],\\n'\n  + '  \"music_vibe\"     : \"Precise music energy matching tone and visual arc\"\\n'\n  + '}';\n\nconst userMessage =\n  'TRENDING THREADS POST INSPIRATION:\\n'\n  + postContext\n  + '\\n\\n'\n  + (userAngle ? 'CREATOR SPECIFIC ANGLE: ' + userAngle + '\\n' : '')\n  + '\\n\\nStudy this Threads post above. Understand WHY it performed well. Create an ORIGINAL viral Threads video script'\n  + ' for the ' + postNiche + ' niche \u2014 borrow its virality formula, NOT its words.'\n  + ' Write a real script (hook + body + cta) AND a detailed video_prompt for AI video generation.';\n\nreturn [{\n  json: {\n    niche:         postNiche,\n    postId:        data.post_id,\n    userId:        data.user_id,\n    userPrompt:    userAngle,\n    postContext,\n    systemPrompt,\n    userMessage\n  }\n}];"
+      },
+      "id": "44ea611f-933a-4071-9a26-ba2214361a08",
+      "name": "Build AI Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        656
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer YOUR_GROQ_API_KEY"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ model: 'llama-3.3-70b-versatile', messages: [{ role: 'system', content: $json.systemPrompt }, { role: 'user', content: $json.userMessage }], response_format: { type: 'json_object' }, max_tokens: 1200, temperature: 0.85 }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "3a5d99e6-e550-494e-8ab3-391c14c32c09",
+      "name": "\ud83e\udd16 Groq: Generate Threads Script",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1344,
+        656
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $input.first().json;\n\nconst messageContent = response.choices?.[0]?.message?.content || response.output || '';\nlet scriptJson = {};\ntry {\n  scriptJson = JSON.parse(messageContent);\n} catch(e) {\n  try {\n    const jsonMatch = messageContent.match(/\\{[\\s\\S]*\\}/);\n    if (jsonMatch) { scriptJson = JSON.parse(jsonMatch[0]); }\n  } catch(e2) {\n    scriptJson = {\n      hook: messageContent, body: '', cta: '',\n      hook_text: '', video_prompt: messageContent,\n      negative_prompt: 'text overlay, watermark, distorted faces, grainy, low resolution',\n      caption: '', hashtags: ['#viral', '#Threads'], music_vibe: 'energetic'\n    };\n  }\n}\n\nconst fullScript = [scriptJson.hook, scriptJson.body, scriptJson.cta].filter(Boolean).join('\\n\\n');\nconst ctx = $('Merge Context').item.json;\n\nreturn [{ json: {\n  ...ctx,\n  script_content:  fullScript,\n  script_json:     JSON.stringify(scriptJson),\n  hook:            scriptJson.hook            || '',\n  body:            scriptJson.body            || '',\n  cta:             scriptJson.cta             || '',\n  title:           scriptJson.title           || 'Generated Threads Video',\n  hook_text:       scriptJson.hook_text       || scriptJson.hook || '',\n  video_prompt:    (scriptJson.video_prompt   || '').substring(0, 2500),\n  negative_prompt: scriptJson.negative_prompt || 'text overlay, watermark, distorted faces, grainy, low resolution',\n  caption:         scriptJson.caption         || '',\n  hashtags:        Array.isArray(scriptJson.hashtags) ? scriptJson.hashtags.join(' ') : (scriptJson.hashtags || ''),\n  music_vibe:      scriptJson.music_vibe      || '',\n  script_text:     fullScript\n}}];"
+      },
+      "id": "96619dd3-1aa0-4c3d-8b81-36d9f6b030c2",
+      "name": "Parse Script JSON",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1568,
+        656
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO threads_generated_videos (post_id, user_id, niche, user_prompt, script, script_text, status)\nVALUES ('{{ $json.post_id }}','{{ $json.user_id }}','{{ $json.niche }}','{{ $json.user_prompt.replace(/'/g,\"''\") }}','{{ $json.script_json.replace(/'/g,\"''\") }}','{{ $json.script_text.replace(/'/g,\"''\") }}','processing')\nRETURNING id, post_id, user_id, niche, status;",
+        "options": {}
+      },
+      "id": "e3e5067b-9314-4672-aff9-24bb778bb1b9",
+      "name": "Create Video Record in DB",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1792,
+        656
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "eiV6Y48xwK3oUJgZ",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const dbRecord = $input.first().json;\nconst scriptCtx = $('Parse Script JSON').item.json;\nreturn [{ json: { ...scriptCtx, generated_video_id: dbRecord.id } }];"
+      },
+      "id": "71127f60-8dd7-4e37-94ac-380dacdea22d",
+      "name": "Attach DB ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2016,
+        656
+      ]
+    },
+    {
+      "parameters": {
+        "amount": 10,
+        "unit": "seconds"
+      },
+      "id": "6a825552-44ec-47cb-801d-5428697fe403",
+      "name": "Mock AI Generation Delay (10s)",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [
+        2240,
+        656
+      ],
+      "webhookId": "threads-kling-mock-wait-01"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Replace this node with real Kling / RunwayML / Luma API call\nconst ctx = $input.first().json;\nconst mockVideoUrl = \"https://www.w3schools.com/html/mov_bbb.mp4\";\nreturn [{ json: {\n  ...ctx,\n  kling_status: 'succeed',\n  video_url: mockVideoUrl\n}}];"
+      },
+      "id": "9f5fb114-a060-417a-9d7c-024a9820f706",
+      "name": "Mock Video Generator (Kling/Runway)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2464,
+        656
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE threads_generated_videos SET video_url = '{{ $json.video_url }}', status = 'done' WHERE id = {{ $json.generated_video_id }};",
+        "options": {}
+      },
+      "id": "374ee4bd-f082-45b0-abc1-02e79cc17953",
+      "name": "Save Video URL to DB",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        2688,
+        656
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "eiV6Y48xwK3oUJgZ",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "threads-video-approve",
+        "options": {}
+      },
+      "id": "55240faa-e706-4240-95b2-d6c602cc2dea",
+      "name": "Webhook: Threads Approve",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        2912,
+        944
+      ],
+      "webhookId": "threads-video-approve-001"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "check-threads-approved",
+              "leftValue": "={{ $json.body.decision }}",
+              "rightValue": "approve",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "2d6bd039-2b9d-47a1-af78-3c2965abfb34",
+      "name": "\u2753 Video Approved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        3136,
+        944
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE threads_generated_videos SET status = 'approved' WHERE id = {{ $('Webhook: Threads Approve').item.json.body.videoId }};",
+        "options": {}
+      },
+      "id": "9f3cbcee-71fd-45c1-ad8d-c7c00ee0a3d9",
+      "name": "Mark as Approved",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        3360,
+        560
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "eiV6Y48xwK3oUJgZ",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE threads_generated_videos SET status = 'rejected' WHERE id = {{ $('Webhook: Threads Approve').item.json.body.videoId }};",
+        "options": {}
+      },
+      "id": "23b1e3b5-eb69-43c2-8a20-26ffe7c99712",
+      "name": "Mark as Rejected",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        3360,
+        752
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "eiV6Y48xwK3oUJgZ",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://graph.threads.net/v1.0/me/threads",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer YOUR_THREADS_ACCESS_TOKEN"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "media_type",
+              "value": "VIDEO"
+            },
+            {
+              "name": "video_url",
+              "value": "={{ $('Webhook: Threads Approve').item.json.body.videoUrl }}"
+            },
+            {
+              "name": "text",
+              "value": "=AI Generated Video #TrendAI #Threads"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "e8383ccd-d14c-4835-bb49-3118194ffa9a",
+      "name": "Publish to Threads",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        3584,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE threads_generated_videos SET status = 'published' WHERE id = {{ $('Webhook: Threads Approve').item.json.body.videoId }};",
+        "options": {}
+      },
+      "id": "8341f872-f20b-4d87-b070-fdd478742ee3",
+      "name": "Mark as Published",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        3808,
+        560
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "eiV6Y48xwK3oUJgZ",
+          "name": "Postgres account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook Trigger: Scrape": {
+      "main": [
+        [
+          {
+            "node": "Run Apify: Threads Scraper",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Apify: Threads Scraper": {
+      "main": [
+        [
+          {
+            "node": "Extract & Enrich Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract & Enrich Data": {
+      "main": [
+        [
+          {
+            "node": "Upsert Post (No Duplicates)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Trigger: Generate": {
+      "main": [
+        [
+          {
+            "node": "Fetch Post from DB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Post from DB": {
+      "main": [
+        [
+          {
+            "node": "Merge Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Context": {
+      "main": [
+        [
+          {
+            "node": "Classify Niche (Gemini Flash)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Niche (Gemini Flash)": {
+      "main": [
+        [
+          {
+            "node": "Resolve Final Niche",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Final Niche": {
+      "main": [
+        [
+          {
+            "node": "Build AI Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build AI Prompt": {
+      "main": [
+        [
+          {
+            "node": "\ud83e\udd16 Groq: Generate Threads Script",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "\ud83e\udd16 Groq: Generate Threads Script": {
+      "main": [
+        [
+          {
+            "node": "Parse Script JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Script JSON": {
+      "main": [
+        [
+          {
+            "node": "Create Video Record in DB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Video Record in DB": {
+      "main": [
+        [
+          {
+            "node": "Attach DB ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Attach DB ID": {
+      "main": [
+        [
+          {
+            "node": "Mock AI Generation Delay (10s)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mock AI Generation Delay (10s)": {
+      "main": [
+        [
+          {
+            "node": "Mock Video Generator (Kling/Runway)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mock Video Generator (Kling/Runway)": {
+      "main": [
+        [
+          {
+            "node": "Save Video URL to DB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook: Threads Approve": {
+      "main": [
+        [
+          {
+            "node": "\u2753 Video Approved?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "\u2753 Video Approved?": {
+      "main": [
+        [
+          {
+            "node": "Mark as Approved",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark as Rejected",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark as Approved": {
+      "main": [
+        [
+          {
+            "node": "Publish to Threads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Publish to Threads": {
+      "main": [
+        [
+          {
+            "node": "Mark as Published",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error Handler": {
+      "main": [
+        [
+          {
+            "node": "Log Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "meta": {
+    "templateCredsSetupCompleted": true
+  }
+}
