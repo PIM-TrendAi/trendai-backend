@@ -254,6 +254,18 @@ FB_APP_ID       = os.getenv("FACEBOOK_APP_ID", "")
 FB_APP_SECRET   = os.getenv("FACEBOOK_APP_SECRET", "")
 FB_REDIRECT_URI = os.getenv("FACEBOOK_REDIRECT_URI", "")   # e.g. https://xxx.ngrok.io/api/platforms/facebook/oauth/callback/
 FB_GRAPH_BASE   = "https://graph.facebook.com/v21.0"
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
+YOUTUBE_REDIRECT_URI = os.getenv("YOUTUBE_REDIRECT_URI", "")
+GOOGLE_AUTH_BASE = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+YOUTUBE_SCOPE = " ".join([
+    "openid",
+    "email",
+    "profile",
+    "https://www.googleapis.com/auth/youtube.upload",
+    "https://www.googleapis.com/auth/youtube.readonly",
+])
 
 
 class FacebookOAuthStartView(APIView):
@@ -418,19 +430,183 @@ class FacebookStatusView(APIView):
 # ── YouTube Connect/Disconnect/Status ─────────────────────────────────
 
 
+class YouTubeOAuthStartView(APIView):
+    """GET /api/platforms/youtube/oauth/start/ — Return Google OAuth URL for YouTube access."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET or not YOUTUBE_REDIRECT_URI:
+            return Response(
+                {
+                    "error": (
+                        "YouTube OAuth is not configured on the server. "
+                        "Set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and YOUTUBE_REDIRECT_URI."
+                    )
+                },
+                status=500,
+            )
+
+        params = {
+            "client_id": GOOGLE_CLIENT_ID,
+            "redirect_uri": YOUTUBE_REDIRECT_URI,
+            "response_type": "code",
+            "scope": YOUTUBE_SCOPE,
+            "access_type": "offline",
+            "include_granted_scopes": "true",
+            "prompt": "consent",
+            "state": str(request.user.pk),
+        }
+        return Response({"auth_url": f"{GOOGLE_AUTH_BASE}?{urlencode(params)}", "redirect_uri": YOUTUBE_REDIRECT_URI})
+
+
+class YouTubeOAuthCallbackView(APIView):
+    """GET /api/platforms/youtube/oauth/callback/ — Handle Google redirect after consent."""
+    permission_classes = []
+
+    def get(self, request):
+        error = request.query_params.get("error")
+        code = request.query_params.get("code")
+        state = request.query_params.get("state")
+
+        def _html(title, body, color="#ff4444"):
+            return HttpResponse(
+                f"""<html><body style="font-family:sans-serif;text-align:center;
+                padding-top:80px;background:#0f111e;color:white;">
+                <h2 style="color:{color};">{title}</h2><p>{body}</p>
+                <script>setTimeout(()=>window.close(),3000);</script>
+                </body></html>""",
+                content_type="text/html",
+            )
+
+        if error:
+            return _html("Authorization Cancelled", f"Google said: {error}")
+        if not code or not state:
+            return _html("Invalid Callback", "Missing code or state parameter.")
+
+        User = get_user_model()
+        try:
+            user = User.objects.get(pk=int(state))
+        except (User.DoesNotExist, TypeError, ValueError):
+            return _html("Invalid State", "Could not identify user.")
+
+        try:
+            token_response = httpx.post(
+                GOOGLE_TOKEN_URL,
+                data={
+                    "code": code,
+                    "client_id": GOOGLE_CLIENT_ID,
+                    "client_secret": GOOGLE_CLIENT_SECRET,
+                    "redirect_uri": YOUTUBE_REDIRECT_URI,
+                    "grant_type": "authorization_code",
+                },
+                timeout=10,
+            )
+            token_response.raise_for_status()
+            token_data = token_response.json()
+            access_token = token_data.get("access_token")
+            refresh_token = token_data.get("refresh_token")
+            expires_in = int(token_data.get("expires_in") or 0)
+            if not access_token:
+                raise ValueError(token_data.get("error_description") or token_data)
+        except Exception as exc:
+            return _html("Token Exchange Failed", str(exc))
+
+        channel_title = None
+        try:
+            channel_response = httpx.get(
+                "https://www.googleapis.com/youtube/v3/channels",
+                params={"part": "snippet", "mine": "true"},
+                headers={"Authorization": f"Bearer {access_token}"},
+                timeout=10,
+            )
+            channel_response.raise_for_status()
+            channel_items = channel_response.json().get("items", [])
+            if channel_items:
+                channel_title = channel_items[0].get("snippet", {}).get("title")
+        except Exception:
+            channel_title = None
+
+        platform, _ = UserPlatform.objects.get_or_create(user=user, platform_name="YouTube")
+        platform.access_token = access_token
+        if refresh_token:
+            platform.refresh_token = refresh_token
+        platform.token_expires_at = timezone.now() + timedelta(seconds=expires_in) if expires_in else None
+        platform.connected = True
+        platform.connected_at = timezone.now()
+        platform.save()
+
+        channel_message = (
+            f"Connected to <b>{channel_title}</b>.<br><br>Return to the TrendAI app."
+            if channel_title else
+            "Return to the TrendAI app."
+        )
+        return _html("YouTube Connected!", channel_message, color="#FF0000")
+
+
 class YouTubeConnectView(APIView):
-    """POST /api/platforms/youtube/connect/ — Store the YT token and mark connected."""
+    """POST /api/platforms/youtube/connect/ — Manual token fallback for YouTube."""
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        token = request.data.get("access_token", "").strip()
+        if not token:
+            return Response(
+                {"error": "Use GET /api/platforms/youtube/oauth/start/ to connect via Google OAuth."},
+                status=400,
+            )
         platform, _ = UserPlatform.objects.get_or_create(
             user=request.user, platform_name="YouTube"
         )
-        platform.access_token = request.data.get("access_token", "")
+        platform.access_token = token
         platform.connected = True
         platform.connected_at = timezone.now()
         platform.save()
         return Response({"status": "connected"})
+
+
+class YouTubeOAuthExchangeView(APIView):
+    """POST /api/platforms/youtube/oauth/exchange/ — Exchange auth code for tokens (called from app WebView after intercepting redirect)."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        code = request.data.get("code", "").strip()
+        if not code:
+            return Response({"error": "code is required"}, status=400)
+
+        if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET or not YOUTUBE_REDIRECT_URI:
+            return Response({"error": "YouTube OAuth is not configured on the server."}, status=500)
+
+        try:
+            token_response = httpx.post(
+                GOOGLE_TOKEN_URL,
+                data={
+                    "code": code,
+                    "client_id": GOOGLE_CLIENT_ID,
+                    "client_secret": GOOGLE_CLIENT_SECRET,
+                    "redirect_uri": YOUTUBE_REDIRECT_URI,
+                    "grant_type": "authorization_code",
+                },
+                timeout=10,
+            )
+            token_response.raise_for_status()
+            token_data = token_response.json()
+            access_token = token_data.get("access_token")
+            refresh_token = token_data.get("refresh_token")
+            expires_in = int(token_data.get("expires_in") or 0)
+            if not access_token:
+                raise ValueError(token_data.get("error_description") or str(token_data))
+        except Exception as exc:
+            return Response({"error": str(exc)}, status=400)
+
+        platform, _ = UserPlatform.objects.get_or_create(user=request.user, platform_name="YouTube")
+        platform.access_token = access_token
+        if refresh_token:
+            platform.refresh_token = refresh_token
+        platform.token_expires_at = timezone.now() + timedelta(seconds=expires_in) if expires_in else None
+        platform.connected = True
+        platform.connected_at = timezone.now()
+        platform.save()
+        return Response({"connected": True})
 
 
 class YouTubeDisconnectView(APIView):
@@ -441,6 +617,8 @@ class YouTubeDisconnectView(APIView):
         try:
             platform = UserPlatform.objects.get(user=request.user, platform_name="YouTube")
             platform.access_token = None
+            platform.refresh_token = None
+            platform.token_expires_at = None
             platform.connected = False
             platform.connected_at = None
             platform.save()

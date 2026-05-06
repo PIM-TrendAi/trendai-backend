@@ -21,6 +21,7 @@ class UserPlatform(models.Model):
     connected = models.BooleanField(default=False)
     connected_at = models.DateTimeField(null=True, blank=True)
     access_token = models.TextField(null=True, blank=True)
+    refresh_token = models.TextField(null=True, blank=True)
     token_expires_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:

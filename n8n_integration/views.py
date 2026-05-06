@@ -273,7 +273,8 @@ class SessionStatusView(APIView):
                                     payload["video_url"] = video_url
                                     payload["video_status"] = gen_status
                                 if gen_status == "pending_review":
-                                    payload["status"] = "processing"
+                                    payload["status"] = "script_pending"
+                                    payload["script_status"] = "pending_approval"
                                 elif gen_status == "approved":
                                     payload["status"] = "ready"
                                 elif gen_status == "posted":
@@ -504,6 +505,8 @@ class ApproveScriptView(APIView):
     SCRIPT_APPROVE_WEBHOOK_PATH = os.getenv("N8N_SCRIPT_APPROVE_WEBHOOK_PATH", "tiktok-script-approve")
     INSTAGRAM_SCRIPT_APPROVE_PATH = os.getenv("N8N_INSTAGRAM_SCRIPT_APPROVE_PATH", "instagram-script-approve")
 
+    YOUTUBE_SCRIPT_APPROVE_PATH = os.getenv("N8N_YOUTUBE_SCRIPT_APPROVE_PATH", "youtube-approve-script")
+
     def post(self, request):
         session_id = request.data.get("session_id")
         script_id = request.data.get("script_id")
@@ -512,6 +515,9 @@ class ApproveScriptView(APIView):
         platform = request.data.get("platform", "tiktok").lower()
 
         session = CreatorSession.objects.filter(session_id=session_id).first()
+
+        if platform == "youtube":
+            return self._handle_youtube(request, session, approved)
 
         payload = {
             "sessionId": session_id,
@@ -529,10 +535,54 @@ class ApproveScriptView(APIView):
         else:
             success = trigger_n8n_webhook(self.SCRIPT_APPROVE_WEBHOOK_ID, payload,
                                           fallback_ids=[self.SCRIPT_APPROVE_WEBHOOK_PATH])
-        
+
         if not success:
             return Response({"error": "Failed proxying to n8n"}, status=400)
-            
+
+        return Response({"success": True})
+
+    def _handle_youtube(self, request, session, approved):
+        from django.db import connection as db_conn
+        if not session:
+            return Response({"error": "Session not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        user_id = int(session.creator_id)
+        niche = session.niche
+
+        with db_conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT id FROM youtube_generated WHERE user_id = %s AND LOWER(niche) = LOWER(%s) "
+                "AND status = 'pending_review' ORDER BY id DESC LIMIT 1",
+                [user_id, niche]
+            )
+            row = cursor.fetchone()
+
+        if not row:
+            return Response({"error": "No pending script found"}, status=status.HTTP_404_NOT_FOUND)
+
+        generated_id = row[0]
+
+        if approved:
+            with db_conn.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE youtube_generated SET status = 'approved' WHERE id = %s",
+                    [generated_id]
+                )
+        else:
+            # Mark rejected and trigger a new generation so polling finds a fresh pending_review
+            with db_conn.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE youtube_generated SET status = 'rejected' WHERE id = %s",
+                    [generated_id]
+                )
+            regen_payload = {
+                "user_id": user_id,
+                "niche": niche,
+                "email": request.user.email,
+                "prompt": "",
+            }
+            trigger_n8n_webhook("generate-video-v2", regen_payload)
+
         return Response({"success": True})
 
 class ApproveVideoView(APIView):
@@ -590,6 +640,8 @@ class ApproveVideoView(APIView):
         elif platform == "threads":
             success = trigger_n8n_webhook(self.THREADS_VIDEO_APPROVE_PATH, payload)
         elif platform == "youtube":
+            payload["approved"] = approved
+            payload["generated_id"] = video_id
             success = trigger_n8n_webhook(self.YOUTUBE_VIDEO_APPROVE_PATH, payload)
         else:
             # TikTok path: include access token
@@ -996,6 +1048,16 @@ class N8NCallbackView(APIView):
         session_id = request.data.get("session_id")
 
         if action == "script_ready":
+            # YouTube sends platform + user_id (no session_id / script_id)
+            if request.data.get("platform") == "youtube":
+                user_id = str(request.data.get("user_id", ""))
+                if user_id:
+                    CreatorSession.objects.filter(
+                        creator_id=user_id,
+                        platform="youtube",
+                    ).order_by("-created_at").update(status="script_pending")
+                return Response({"status": "ok", "action": action})
+
             script_content = request.data.get("script_content", "")
             script_id = request.data.get("script_id", "")
             creator_id = str(request.data.get("creator_id", ""))

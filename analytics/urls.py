@@ -2,6 +2,7 @@ from django.urls import path
 from .views import (
     AnalyticsSummaryView, EngagementView, PlatformPerformanceView,
     HeatmapView, SavedTrendAnalyticsView, InstagramStatsView, FacebookStatsView,
+    YouTubeStatsView,
 )
 
 urlpatterns = [
@@ -12,4 +13,5 @@ urlpatterns = [
     path("saved-trends/", SavedTrendAnalyticsView.as_view(), name="analytics-saved"),
     path("instagram/", InstagramStatsView.as_view(), name="analytics-instagram"),
     path("facebook/", FacebookStatsView.as_view(), name="analytics-facebook"),
+    path("youtube/", YouTubeStatsView.as_view(), name="analytics-youtube"),
 ]

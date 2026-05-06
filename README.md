@@ -68,6 +68,8 @@ trendai-backend/
 - `GET /` — All platform connection statuses
 - TikTok, Instagram, Facebook, YouTube, Threads: `connect`, `disconnect`, `status`, `oauth/start`, `oauth/callback`
 
+YouTube OAuth requires `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `YOUTUBE_REDIRECT_URI` to be set in the backend environment. The redirect URI must exactly match the URI configured in Google Cloud OAuth credentials.
+
 ### Trends — `/api/trends/`
 - `GET /` — List trends (`?platform=`, `?sort=growth|score|views`, `?niche=`)
 - `POST /{id}/save/` / `DELETE /{id}/save/` — Bookmark management

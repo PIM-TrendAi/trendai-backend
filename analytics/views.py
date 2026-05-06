@@ -578,6 +578,260 @@ class FacebookStatsView(APIView):
         })
 
 
+# ── YouTube Stats ─────────────────────────────────────────────────────────────
+
+YT_API_BASE = "https://www.googleapis.com/youtube/v3"
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+_GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+_GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
+_YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "")
+_YOUTUBE_CHANNEL_ID = os.getenv("YOUTUBE_CHANNEL_ID", "")
+
+
+def _get_youtube_platform(user):
+    """Return UserPlatform for YouTube or None."""
+    try:
+        p = UserPlatform.objects.get(user=user, platform_name="YouTube")
+        return p if p.connected else None
+    except UserPlatform.DoesNotExist:
+        return None
+
+
+def _refresh_youtube_token(platform):
+    """Attempt to refresh the access token; returns new token or None."""
+    if not platform.refresh_token:
+        return None
+    try:
+        resp = httpx.post(
+            GOOGLE_TOKEN_URL,
+            data={
+                "client_id": _GOOGLE_CLIENT_ID,
+                "client_secret": _GOOGLE_CLIENT_SECRET,
+                "refresh_token": platform.refresh_token,
+                "grant_type": "refresh_token",
+            },
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            new_token = data.get("access_token")
+            expires_in = int(data.get("expires_in") or 0)
+            if new_token:
+                platform.access_token = new_token
+                if expires_in:
+                    from django.utils import timezone as dj_tz
+                    platform.token_expires_at = dj_tz.now() + timedelta(seconds=expires_in)
+                platform.save(update_fields=["access_token", "token_expires_at"])
+                return new_token
+    except Exception:
+        pass
+    return None
+
+
+def _yt_headers(token):
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _fetch_yt_channel(token=None, api_key=None, channel_id=None):
+    """Return channel snippet+statistics dict or None.
+    Uses OAuth token (mine=true) or API key + channel_id for public data."""
+    try:
+        if token:
+            resp = httpx.get(
+                f"{YT_API_BASE}/channels",
+                params={"part": "snippet,statistics", "mine": "true"},
+                headers=_yt_headers(token),
+                timeout=10,
+            )
+        elif api_key and channel_id:
+            resp = httpx.get(
+                f"{YT_API_BASE}/channels",
+                params={"part": "snippet,statistics", "id": channel_id, "key": api_key},
+                timeout=10,
+            )
+        else:
+            return None
+        if resp.status_code == 200:
+            items = resp.json().get("items", [])
+            if items:
+                return items[0]
+    except httpx.HTTPError:
+        pass
+    return None
+
+
+def _fetch_yt_videos(token=None, max_results=20, api_key=None, channel_id=None):
+    """Return list of video stat dicts using the uploads playlist.
+    Uses OAuth token (mine=true) or API key + channel_id for public data."""
+    try:
+        # Step 1: get the uploads playlist ID
+        if token:
+            ch_resp = httpx.get(
+                f"{YT_API_BASE}/channels",
+                params={"part": "contentDetails", "mine": "true"},
+                headers=_yt_headers(token),
+                timeout=10,
+            )
+        elif api_key and channel_id:
+            ch_resp = httpx.get(
+                f"{YT_API_BASE}/channels",
+                params={"part": "contentDetails", "id": channel_id, "key": api_key},
+                timeout=10,
+            )
+        else:
+            return []
+
+        if ch_resp.status_code != 200:
+            return []
+        items = ch_resp.json().get("items", [])
+        if not items:
+            return []
+        uploads_playlist_id = (
+            items[0]
+            .get("contentDetails", {})
+            .get("relatedPlaylists", {})
+            .get("uploads", "")
+        )
+        if not uploads_playlist_id:
+            return []
+
+        # Step 2: list recent items from uploads playlist
+        pl_params = {"part": "snippet", "playlistId": uploads_playlist_id, "maxResults": max_results}
+        pl_headers = _yt_headers(token) if token else {}
+        if not token and api_key:
+            pl_params["key"] = api_key
+        pl_resp = httpx.get(f"{YT_API_BASE}/playlistItems", params=pl_params, headers=pl_headers, timeout=10)
+        if pl_resp.status_code != 200:
+            return []
+        video_ids = [
+            i["snippet"]["resourceId"]["videoId"]
+            for i in pl_resp.json().get("items", [])
+            if i.get("snippet", {}).get("resourceId", {}).get("kind") == "youtube#video"
+        ]
+        if not video_ids:
+            return []
+
+        # Step 3: fetch statistics + snippet for those video IDs
+        stats_params = {"part": "snippet,statistics", "id": ",".join(video_ids)}
+        stats_headers = _yt_headers(token) if token else {}
+        if not token and api_key:
+            stats_params["key"] = api_key
+        stats_resp = httpx.get(f"{YT_API_BASE}/videos", params=stats_params, headers=stats_headers, timeout=10)
+        if stats_resp.status_code != 200:
+            return []
+
+        videos = []
+        for item in stats_resp.json().get("items", []):
+            snippet = item.get("snippet", {})
+            stats = item.get("statistics", {})
+            thumbnails = snippet.get("thumbnails", {})
+            thumb = (
+                thumbnails.get("medium", {}).get("url")
+                or thumbnails.get("default", {}).get("url")
+                or ""
+            )
+            videos.append({
+                "video_id": item.get("id", ""),
+                "title": snippet.get("title", ""),
+                "thumbnail_url": thumb,
+                "published_at": snippet.get("publishedAt", ""),
+                "views": int(stats.get("viewCount", 0)),
+                "likes": int(stats.get("likeCount", 0)),
+                "comments": int(stats.get("commentCount", 0)),
+            })
+        return videos
+    except httpx.HTTPError:
+        return []
+
+
+class YouTubeStatsView(APIView):
+    """GET /api/analytics/youtube/ — YouTube channel + video stats."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        platform = _get_youtube_platform(request.user)
+        api_key = _YOUTUBE_API_KEY
+        channel_id = _YOUTUBE_CHANNEL_ID
+
+        if not platform and not (api_key and channel_id):
+            return Response({
+                "connected": False,
+                "channel": None,
+                "videos": [],
+                "summary": {"subscribers": 0, "total_views": 0, "total_likes": 0, "video_count": 0},
+            })
+
+        token = None
+        if platform:
+            token = platform.access_token
+            # Skip fake/manual tokens
+            if token in ("manual_connected", "demo", "") or not token:
+                token = None
+            elif platform.token_expires_at:
+                from django.utils import timezone as dj_tz
+                if dj_tz.now() >= platform.token_expires_at:
+                    refreshed = _refresh_youtube_token(platform)
+                    token = refreshed if refreshed else None
+
+        # Try OAuth token first, fall back to API key
+        channel = None
+        if token:
+            channel = _fetch_yt_channel(token=token)
+            if channel is None and platform and platform.refresh_token:
+                refreshed = _refresh_youtube_token(platform)
+                if refreshed:
+                    token = refreshed
+                    channel = _fetch_yt_channel(token=token)
+
+        if channel is None and api_key and channel_id:
+            channel = _fetch_yt_channel(api_key=api_key, channel_id=channel_id)
+            token = None  # use api_key path for videos too
+
+        if channel is None:
+            return Response({
+                "connected": True,
+                "error": "youtube_token_expired",
+                "channel": None,
+                "videos": [],
+                "summary": {"subscribers": 0, "total_views": 0, "total_likes": 0, "video_count": 0},
+            })
+
+        videos = _fetch_yt_videos(
+            token=token,
+            api_key=api_key if not token else None,
+            channel_id=channel_id if not token else None,
+        )
+        stats = channel.get("statistics", {})
+        snippet = channel.get("snippet", {})
+        thumbnails = snippet.get("thumbnails", {})
+        channel_thumb = (
+            thumbnails.get("medium", {}).get("url")
+            or thumbnails.get("default", {}).get("url")
+            or ""
+        )
+
+        total_likes = sum(v["likes"] for v in videos)
+        total_views_videos = sum(v["views"] for v in videos)
+
+        return Response({
+            "connected": True,
+            "channel": {
+                "id": channel.get("id", ""),
+                "title": snippet.get("title", ""),
+                "thumbnail_url": channel_thumb,
+                "custom_url": snippet.get("customUrl", ""),
+            },
+            "videos": videos,
+            "summary": {
+                "subscribers": int(stats.get("subscriberCount", 0)),
+                "total_views": int(stats.get("viewCount", 0)),
+                "video_count": int(stats.get("videoCount", 0)),
+                "total_likes": total_likes,
+                "recent_views": total_views_videos,
+            },
+        })
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _fmt(n):
