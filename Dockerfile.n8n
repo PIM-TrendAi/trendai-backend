@@ -1,0 +1,13 @@
+# Stage 1: download static FFmpeg binary from regular Alpine
+FROM alpine:3.18 AS ffmpeg-downloader
+RUN apk add --no-cache wget xz
+RUN wget -q "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz" -O /tmp/ffmpeg.tar.xz \
+    && tar -xJf /tmp/ffmpeg.tar.xz -C /tmp \
+    && mv /tmp/ffmpeg-*-amd64-static/ffmpeg /usr/local/bin/ffmpeg \
+    && chmod +x /usr/local/bin/ffmpeg
+
+# Stage 2: standard N8N image + copy the single static FFmpeg binary
+FROM n8nio/n8n:latest
+USER root
+COPY --from=ffmpeg-downloader /usr/local/bin/ffmpeg /usr/local/bin/ffmpeg
+USER node
